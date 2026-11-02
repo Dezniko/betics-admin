@@ -341,7 +341,7 @@ export async function assignDeposit(db, env, admin, id, body) {
   const wallet = walletStub(env, player.id); // not connected: refused here, before a code is used or the row claimed
   await stepUp(db, env, admin, body);
   if (dep.status === 'unmatched') {
-    const claim = await db.prepare("UPDATE chain_deposits SET status = 'assigned', player_id = ?, note = ? WHERE id = ? AND status = 'unmatched'").bind(player.id, note, id).run();
+    const claim = await db.prepare("UPDATE chain_deposits SET status = 'assigned', player_id = ?, note = ? WHERE id = ? AND status = 'unmatched' AND reversed_at IS NULL").bind(player.id, note, id).run();
     if ((claim.meta?.changes ?? 0) !== 1) fail(409, 'Someone else is assigning this deposit right now. Reload and check.');
   }
   const settings = await ticsSettings(db);
