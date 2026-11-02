@@ -292,6 +292,10 @@ test('unmatched deposit: owner assigns it to an existing player through the wall
   assert.equal((await s.call('POST', path, { address: A1 })).status, 400, 'note required');
   assert.equal((await s.call('POST', path, { address: '0xnope', note: 'x player' })).status, 400);
   assert.equal((await s.call('POST', path, { address: '0x' + '1'.repeat(40), note: 'unknown wallet' })).status, 404);
+  // A deposit that disappeared from the chain (re-audit R2) can never be assigned.
+  s.DB.raw.prepare("UPDATE chain_deposits SET reversed_at = datetime('now') WHERE id = ?").run(id);
+  assert.equal((await s.call('POST', path, { address: A1, note: 'player emailed the tx' })).status, 409);
+  s.DB.raw.prepare('UPDATE chain_deposits SET reversed_at = NULL WHERE id = ?').run(id);
   // Real TICS move: password and a fresh code (re-audit 3 F2).
   assert.equal((await s.call('POST', path, { address: A1, note: 'player emailed the tx' })).status, 401, 'needs password and code');
   assert.equal((await s.call('POST', path, { address: A1, note: 'player emailed the tx', password: 'wrong password 1', code: await own.code(1) })).data.code, 'bad_password');

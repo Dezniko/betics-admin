@@ -330,6 +330,7 @@ export async function assignDeposit(db, env, admin, id, body) {
   const note = body.note.trim();
   const dep = await db.prepare('SELECT * FROM chain_deposits WHERE id = ?').bind(id).first();
   if (!dep) fail(404, 'No deposit with that id.');
+  if (dep.reversed_at) fail(409, 'This deposit disappeared from the chain after its block was final. It cannot be credited.');
   const player = await db.prepare('SELECT id, wallet_address FROM players WHERE wallet_address = ? OR id = ?').bind(address, address).first();
   if (!player) fail(404, 'No player has connected that wallet yet.');
   if (dep.status === 'assigned') {

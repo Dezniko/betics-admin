@@ -289,9 +289,11 @@ export function ticsPaymentsSection(ctx) {
         { label: 'Player', render: x => x.player_id ? h('a', { class: 'mono small', href: `#/players/${x.player_id}` }, shortAddr(x.player_id)) : h('span', { class: 'muted' }, '-') },
         { label: 'Amount', align: 'right', render: x => h('b', {}, money(x.amount_units)) },
         { label: 'Block', align: 'right', render: x => num(x.block_number) },
-        { label: 'Status', render: x => h('span', {}, pill(DEP, x.status), x.note ? h('div', { class: 'muted small' }, x.note) : null) },
+        { label: 'Status', render: x => h('span', {}, x.reversed_at ? h('span', { class: 'pill off' }, 'Reversed') : pill(DEP, x.status),
+          !x.reversed_at && x.credited_at && !x.finalized_at ? h('div', { class: 'muted small', tip: 'Played already; it can be withdrawn once Ethereum has made its block final, about 15 minutes after it arrived.' }, 'Not final yet') : null,
+          x.note ? h('div', { class: 'muted small' }, x.note) : null) },
         { label: 'Tx', render: x => txLink(x.tx_hash, chain) },
-        { label: '', render: x => !owner ? '' : x.status === 'unmatched' ? h('button', { class: 'btn small primary', onclick: () => assign(x) }, 'Assign to player')
+        { label: '', render: x => !owner || x.reversed_at ? '' : x.status === 'unmatched' ? h('button', { class: 'btn small primary', onclick: () => assign(x) }, 'Assign to player')
           : x.status === 'assigned' && !x.credited_at ? h('button', { class: 'btn small', tipText: 'The credit was not confirmed. It can only be tried again for the same player.', onclick: () => assign(x) }, 'Try the credit again') : '' },
       ], d.deposits) : empty('No deposits here', 'TICS sent to the casino wallet appears here once the watcher sees it.'));
     wrap.replaceChildren(head, paused || '', kpis, queue, deposits);
