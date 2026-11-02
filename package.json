@@ -1,0 +1,14 @@
+{
+  "name": "casino-admin",
+  "private": true,
+  "license": "SEE LICENSE IN LICENSE",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Admin panel for the casino platform. No runtime dependencies.",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "dev": "wrangler dev --port 8790",
+    "deploy": "npm test && wrangler deploy"
+  },
+  "engines": { "node": ">=22" }
+}

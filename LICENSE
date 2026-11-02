@@ -1,0 +1,39 @@
+qu-BETICS Source Available License (View Only)
+
+Copyright (c) 2026 Dezniko. All rights reserved.
+
+This repository is published so that players, auditors and security researchers can read the
+code that runs qu-BETICS and check it. It is NOT open source software.
+
+1. What you may do
+   a. View and read the source code.
+   b. Download it and build or run it on your own computer, only to review it, test its
+      security, or check that it matches the software served at betics.io and admin.betics.io.
+   c. Quote short parts of it when discussing, reviewing or reporting on it.
+
+2. What you may not do without prior written permission from the copyright holder
+   a. Copy, modify, merge, publish, distribute, sublicense or sell the code or any part of it.
+   b. Use the code, or anything derived from it, to run, host or offer any service, website or
+      game, whether commercial or not.
+   c. Create derivative works based on the code.
+   d. Use the qu-BETICS name, logo or other brand assets. They are not licensed by this file.
+
+3. Security research
+   Testing on your own computer is welcome. Do not attack, overload or try to access the live
+   services, other players' accounts or funds. Report problems privately as described in
+   SECURITY.md.
+
+4. Contributions
+   If you send an issue, pull request or suggestion, you allow the copyright holder to use it
+   freely, without payment or obligation.
+
+5. Third party components
+   Third party packages and files keep their own licences (for example the npm dependencies
+   listed in the package files and the fonts under frontend/public/fonts, see LICENSES.txt
+   there). This licence covers only the original work in this repository.
+
+6. No warranty
+   The code is provided "as is", without warranty of any kind. The copyright holder is not
+   liable for any claim, damage or loss arising from its use.
+
+For permission requests, contact Dez on Telegram: @degen_manic

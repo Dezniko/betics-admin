@@ -1,0 +1,44 @@
+name = "betics-admin"
+main = "src/index.js"
+account_id = "046a96b420dcb9935276d06833941737"
+compatibility_date = "2026-09-01"
+workers_dev = false
+preview_urls = false
+routes = [{ pattern = "admin.betics.io", custom_domain = true }]
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+# Every request goes through the Worker, so the panel code is only sent to a signed-in admin.
+run_worker_first = true
+
+# Same central platform database as the game core.
+[[d1_databases]]
+binding = "DB"
+database_name = "betics-db"
+database_id = "3f28043c-59c0-4f56-afbc-ae2a9a35305a"
+
+# Player wallets live in the game core Worker; reached only for admin balance changes.
+[[durable_objects.bindings]]
+name = "WALLETS"
+class_name = "DemoCasino"
+script_name = "betics"
+
+[vars]
+GAME_URL = "https://betics.io"
+
+# Alert checks, scheduled messages and Telegram delivery.
+[triggers]
+crons = ["*/2 * * * *"]
+
+[observability]
+enabled = true
+head_sampling_rate = 0.2
+
+# Secrets (wrangler secret put): SESSION_PEPPER, INTERNAL_SECRET (same value as betics and betics-payouts), TREASURY_SECRET (same value as betics-payouts), TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+
+# The payouts Worker (holds the casino wallet key; no public route). Every call sends X-Internal-Secret.
+[[services]]
+binding = "PAYOUTS"
+service = "betics-payouts"
