@@ -100,12 +100,12 @@ export function analyticsView() {
           card('Coming back', T.retention, h('div', { class: 'retention' }, d.retention.map(r => h('div', { class: 'ret' }, h('b', {}, r.pct == null ? '-' : `${r.pct}%`),
             h('span', {}, `after ${r.days} day${r.days > 1 ? 's' : ''}`), h('small', { class: 'muted' }, r.cohort ? `${r.back} of ${r.cohort} players` : 'Not enough time has passed yet')))),
             h('div', { class: 'gm' }, h('span', {}, 'Average session', info('<b>Average session</b>How long a visit lasts, from opening the game to leaving it.')), h('b', {}, d.sessions.avgSeconds ? `${Math.round(d.sessions.avgSeconds / 60)} min ${d.sessions.avgSeconds % 60} s` : '-')))),
-        h('div', { class: 'grid3' },
-          card('By game', '<b>By game</b>Every game on the platform in this period: who played it, how much was bet (turnover) and paid back, and what the casino kept.', table([
-            { label: 'Game', render: g => h('a', { href: `#/games/${encodeURIComponent(g.gameId)}` }, g.gameName || gameName(g.gameId)) }, { label: 'Players', align: 'right', render: g => num(g.players) }, { label: 'Rounds', align: 'right', render: g => num(g.rounds) },
-            { label: 'Bet', align: 'right', render: g => money(g.betCents) }, { label: 'Paid', align: 'right', render: g => money(g.paidCents) },
-            { label: 'Profit', align: 'right', render: g => h('span', { class: g.profitCents >= 0 ? 'up' : 'down' }, money(g.profitCents, { sign: true })) },
-            { label: 'Avg bet', align: 'right', render: g => money(g.avgBetCents) }, { label: 'Payback', align: 'right', render: g => g.rtp == null ? '-' : pct(g.rtp) }], d.games, { emptyText: 'No rounds in this period.' })),
+        card('By game', '<b>By game</b>Every game on the platform in this period: who played it, how much was bet (turnover) and paid back, and what the casino kept.', table([
+          { label: 'Game', render: g => h('a', { href: `#/games/${encodeURIComponent(g.gameId)}` }, g.gameName || gameName(g.gameId)) }, { label: 'Players', align: 'right', render: g => num(g.players) }, { label: 'Rounds', align: 'right', render: g => num(g.rounds) },
+          { label: 'Bet', align: 'right', render: g => money(g.betCents) }, { label: 'Paid', align: 'right', render: g => money(g.paidCents) },
+          { label: 'Profit', align: 'right', render: g => h('span', { class: g.profitCents >= 0 ? 'up' : 'down' }, money(g.profitCents, { sign: true })) },
+          { label: 'Avg bet', align: 'right', render: g => money(g.avgBetCents) }, { label: 'Payback', align: 'right', render: g => g.rtp == null ? '-' : pct(g.rtp) }], d.games, { emptyText: 'No rounds in this period.' })),
+        h('div', { class: 'grid2 even' },
           card('Where players come from', '<b>Referrers</b>The website a player came from on their first visit, and how much the casino has made from those players.', table([
             { label: 'Source', render: r => r.k.replace(/^https?:\/\//, '').slice(0, 40) }, { label: 'Players', align: 'right', render: r => num(r.n) },
             { label: 'House profit', align: 'right', render: r => money(r.profit) }], d.referrers, { emptyText: 'No new players in this period.' })),

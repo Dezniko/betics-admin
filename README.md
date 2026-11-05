@@ -47,6 +47,7 @@ npm test                         # API tests on an in-memory D1 stand-in
 wrangler dev --port 8790 --persist-to ../betics/.wrangler/state   # shares the core's local D1
 node test/browser/admin-qa.mjs   # real-browser QA (headless Chrome on CDP :9354, CDP_PORT to change)
 node test/browser/tics-qa.mjs    # Treasury, Fees, Payments, Players in both themes and at 390px (ADMIN_URL, CDP_PORT, SETUP_LINK, QA_OUT)
+node test/browser/slots-qa.mjs   # Gods of Power: Games page, slot round view, Rounds and Money game filters, Analytics By game, at 1280 and 390px
 wrangler deploy
 ```
 

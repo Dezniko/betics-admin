@@ -294,9 +294,10 @@ a.card.kpi{color:inherit;text-decoration:none}
 @media (max-width:640px){.flag-row{flex-wrap:wrap}.flag-row .flag-toggle{margin-left:20px}}
 /* Gods of Power round view: reels of every spin, winning cells lit. */
 .slot-sum{white-space:nowrap}.slot-sum .pill{margin-left:6px}
-.slot-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:8px 0 14px}
+.slot-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:8px 0 14px}
 .slot-summary>span{display:flex;flex-direction:column;gap:2px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--raise)}
-.slot-summary small{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.04em}.slot-summary b{font-size:16px}
+.slot-summary small{color:var(--mut);font-size:11px}.slot-summary small:first-child{text-transform:uppercase;letter-spacing:.04em}.slot-summary b{font-size:16px}
+.table .tlink{white-space:nowrap}
 .spins{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(360px,1fr))}
 @media (max-width:420px){.spins{grid-template-columns:1fr}}
 .spin{border:1px solid var(--line);border-radius:12px;padding:12px;background:var(--panel);min-width:0}

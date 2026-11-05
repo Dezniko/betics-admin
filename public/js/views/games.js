@@ -50,7 +50,8 @@ export function gameView(ctx, id) {
     const minI = d.betLevels ? levelSel(g.minStakeCents) : centsInput(g.minStakeCents, { disabled: !can }), maxI = d.betLevels ? levelSel(g.maxStakeCents) : centsInput(g.maxStakeCents, { disabled: !can });
     const winI = centsInput(g.maxWinCents, { disabled: !can }), lossI = centsInput(g.maxHouseLossCents, { disabled: !can });
     const slotNote = d.betLevels ? h('p', { class: 'muted small' }, `Gods of Power pays at most ${num(d.capMultiple)} times the bet in one round (base spin and free spins together), so the maximum win must be at least ${money(g.minStakeCents * d.capMultiple)} for the minimum bet. Bets are fixed levels from ${money(d.betLevels[0])} to ${money(d.betLevels[d.betLevels.length - 1])}.`) : null;
-    const round = g.kind === 'slot' ? 'spin' : 'round';
+    // A slot round is one bet: the base spin plus any free spins it awards, so limits are per round there too.
+    const round = 'round';
     const limitsForm = h('form', { class: 'stack', onsubmit: async e => {
       e.preventDefault();
       const patch = { maintenanceMessage: msg.value, minStakeCents: readCents(minI), maxStakeCents: readCents(maxI), maxWinCents: readCents(winI), maxHouseLossCents: readCents(lossI) };
