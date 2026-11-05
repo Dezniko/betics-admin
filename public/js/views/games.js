@@ -1,9 +1,10 @@
 // Games list and one game's controls.
-import { h, api, money, pct, num, info, card, pageHead, loading, errorBox, empty, toast, confirmDialog, field, centsInput, readCents, ago, short, flag, localTime, fillSeries, isReal, stepUpFields } from '../lib.js';
+import { h, api, money, pct, num, info, card, pageHead, loading, errorBox, empty, toast, confirmDialog, field, centsInput, readCents, ago, short, flag, localTime, fillSeries, isReal, stepUpFields, cap } from '../lib.js';
 import { T } from '../glossary.js';
 import { lineChart } from '../charts.js';
 import { liveRounds } from './live.js';
 
+const KIND = { table: 'Table game', slot: 'Slot' };
 export function gamesView() {
   const root = h('div', { class: 'page' }, pageHead('Games', `Every game on the platform, with ${isReal() ? 'real TICS' : 'demo'} results. Click one to switch it on or off, set its limits or choose its maths setting.`));
   const body = h('div', {}, loading()); root.append(body);
@@ -11,7 +12,7 @@ export function gamesView() {
     try {
       const { games } = await api('/games');
       body.replaceChildren(h('div', { class: 'game-grid' }, games.map(g => h('a', { class: 'card game-tile', href: `#/games/${g.id}` },
-        h('div', { class: 'tile-top' }, h('span', { class: 'gicon' }, g.name[0]), h('div', {}, h('b', {}, g.name), h('div', { class: 'muted small' }, g.mathLabel)),
+        h('div', { class: 'tile-top' }, h('span', { class: 'gicon' }, g.name[0]), h('div', {}, h('b', {}, g.name), h('div', { class: 'muted small' }, `${KIND[g.kind] || cap(g.kind || '')} · ${g.mathLabel || 'no maths setting'}`)),
           h('span', { class: `pill ${g.enabled ? 'on' : 'off'}` }, g.enabled ? 'On' : 'Off')),
         h('div', { class: 'tile-stats' },
           h('div', {}, h('small', {}, 'Profit today', info(T.profit)), h('b', { class: g.profitTodayCents >= 0 ? 'gold' : 'down' }, money(g.profitTodayCents))),
@@ -26,7 +27,7 @@ export function gamesView() {
 export function gameView(ctx, id) {
   const root = h('div', { class: 'page' }, loading());
   const can = ctx.can('game:edit');
-  const latest = liveRounds(ctx, { title: 'Latest rounds', tip: 'The newest rounds on this game. Click one to see the bets on the table and the fairness proof.', game: id, limit: 20 });
+  const latest = liveRounds(ctx, { title: 'Latest rounds', tip: 'The newest rounds on this game. Click one to see how it went and the fairness proof.', game: id, limit: 20 });
   async function load() {
     try { render(await api(`/games/${id}`)); } catch (e) { root.replaceChildren(errorBox(e, load)); }
   }
@@ -44,18 +45,22 @@ export function gameView(ctx, id) {
         ? { title: `Switch ${g.name} off?`, danger: true, body: `Players in the middle of a round finish it. After that nobody can start a new round, and they see: "${g.maintenanceMessage}"`, done: `${g.name} is off.` }
         : { title: `Switch ${g.name} on?`, body: 'Players can start playing straight away with the current limits and maths setting.', done: `${g.name} is on.` }) });
     const msg = h('textarea', { class: 'input', rows: 2, maxlength: 300, disabled: !can }, g.maintenanceMessage);
-    const minI = centsInput(g.minStakeCents, { disabled: !can }), maxI = centsInput(g.maxStakeCents, { disabled: !can });
+    // A slot only takes its fixed bet levels (the game refuses any other stake), so those limits are a choice, not a number.
+    const levelSel = v => h('select', { class: 'input', disabled: !can }, d.betLevels.map(u => h('option', { value: (u / 100).toFixed(2), selected: u === v }, money(u))));
+    const minI = d.betLevels ? levelSel(g.minStakeCents) : centsInput(g.minStakeCents, { disabled: !can }), maxI = d.betLevels ? levelSel(g.maxStakeCents) : centsInput(g.maxStakeCents, { disabled: !can });
     const winI = centsInput(g.maxWinCents, { disabled: !can }), lossI = centsInput(g.maxHouseLossCents, { disabled: !can });
+    const slotNote = d.betLevels ? h('p', { class: 'muted small' }, `Gods of Power pays at most ${num(d.capMultiple)} times the bet in one round (base spin and free spins together), so the maximum win must be at least ${money(g.minStakeCents * d.capMultiple)} for the minimum bet. Bets are fixed levels from ${money(d.betLevels[0])} to ${money(d.betLevels[d.betLevels.length - 1])}.`) : null;
+    const round = g.kind === 'slot' ? 'spin' : 'round';
     const limitsForm = h('form', { class: 'stack', onsubmit: async e => {
       e.preventDefault();
       const patch = { maintenanceMessage: msg.value, minStakeCents: readCents(minI), maxStakeCents: readCents(maxI), maxWinCents: readCents(winI), maxHouseLossCents: readCents(lossI) };
       const limitsChanged = patch.minStakeCents !== g.minStakeCents || patch.maxStakeCents !== g.maxStakeCents || patch.maxWinCents !== g.maxWinCents || patch.maxHouseLossCents !== g.maxHouseLossCents;
       await save(patch, { money: limitsChanged, title: 'Save these limits?', body: h('div', {}, h('p', { class: 'muted' }, 'From the next round:'), h('ul', {},
-        h('li', {}, `Bets from ${money(patch.minStakeCents)} to ${money(patch.maxStakeCents)} per round`), h('li', {}, `At most ${money(patch.maxWinCents)} paid on one round`),
-        h('li', {}, `The casino can lose at most ${money(patch.maxHouseLossCents)} on one round`))), done: 'Limits saved.' });
+        h('li', {}, `Bets from ${money(patch.minStakeCents)} to ${money(patch.maxStakeCents)} per ${round}`), h('li', {}, `At most ${money(patch.maxWinCents)} paid on one ${round}`),
+        h('li', {}, `The casino can lose at most ${money(patch.maxHouseLossCents)} on one ${round}`))), done: 'Limits saved.' });
     } },
-      h('div', { class: 'form-grid' }, field('Minimum bet per round', minI, T.minStake), field('Maximum bet per round', maxI, T.maxStake),
-        field('Maximum win per round', winI, T.maxWin), field('Table limit (most the casino can lose on one round)', lossI, T.maxLoss)),
+      h('div', { class: 'form-grid' }, field(`Minimum bet per ${round}`, minI, T.minStake), field(`Maximum bet per ${round}`, maxI, T.maxStake),
+        field(`Maximum win per ${round}`, winI, T.maxWin), field(`Table limit (most the casino can lose on one ${round})`, lossI, T.maxLoss)), slotNote,
       field('Maintenance message', msg, T.maintenance), can ? h('button', { class: 'btn primary', type: 'submit' }, 'Save limits') : h('p', { class: 'muted' }, 'Your role can view these settings but not change them.'));
     const mathCards = h('div', { class: 'math-options' }, d.math.map(m => h('div', { class: `math ${m.id === g.mathId ? 'chosen' : ''}` },
       h('div', { class: 'math-top' }, h('b', {}, m.label), m.id === g.mathId ? h('span', { class: 'pill on' }, 'In use') : null),

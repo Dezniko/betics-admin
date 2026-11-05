@@ -1,6 +1,7 @@
 // A rounds feed that refreshes itself every 5 seconds (can be paused) and
 // has a Refresh button, without reloading the rest of the page.
-import { h, api, money, info, ago, short, flag, cap, empty } from '../lib.js';
+import { h, api, money, info, ago, short, flag, empty } from '../lib.js';
+import { resultCell, rememberGames, gameName } from './outcome.js';
 
 export function liveRounds(ctx, { title = 'Live rounds', tip, game = null, limit = 15 } = {}) {
   const list = h('div', { class: 'feed' });
@@ -16,14 +17,15 @@ export function liveRounds(ctx, { title = 'Live rounds', tip, game = null, limit
     if (manual) refreshBtn.disabled = true;
     try {
       const p = new URLSearchParams({ limit: String(limit) }); if (game) p.set('game', game);
-      const { rounds } = await api(`/rounds?${p}`);
+      const { rounds, games } = await api(`/rounds?${p}`);
+      rememberGames(games);
       if (!rounds.length) { list.replaceChildren(empty('No rounds yet', 'Rounds appear here the moment they settle.')); }
       else list.replaceChildren(h('div', { class: 'row head' }, h('span', {}, 'Player'), h('span', {}, game ? 'Result' : 'Game'), h('span', { class: 'r' }, 'Bet'), h('span', { class: 'r' }, 'Paid'), h('span', { class: 'r' }, 'House')),
         ...rounds.map(r => {
           const house = r.stake_cents - r.payout_cents;
-          return h('a', { class: `row ${!first && !known.has(r.id) ? 'fresh' : ''}`, href: `#/rounds/${encodeURIComponent(r.id)}`, tip: 'Open this round to see the bets on the table and the fairness proof.' },
+          return h('a', { class: `row ${!first && !known.has(r.id) ? 'fresh' : ''}`, href: `#/rounds/${encodeURIComponent(r.id)}`, tip: 'Open this round to see how it went and the fairness proof.' },
             h('span', { class: 'mono' }, short(r.player_id)),
-            h('span', {}, game ? h('span', { class: `pocket ${r.outcome.color}` }, r.outcome.pocket) : cap(r.game_id),
+            h('span', {}, game ? resultCell(r) : h('span', {}, gameName(r.game_id), ' ', h('span', { class: 'muted small' }, resultCell(r))),
               h('span', { class: 'meta' }, `${ago(r.created_at)} · ${flag(r.country)} ${r.device || ''}`)),
             h('span', { class: 'r' }, money(r.stake_cents)), h('span', { class: 'r' }, r.payout_cents ? money(r.payout_cents) : '-'),
             h('span', { class: `r ${house >= 0 ? 'up' : 'down'}` }, money(house, { sign: true })));

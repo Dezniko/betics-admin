@@ -109,15 +109,17 @@ function limitsCard(ctx, limits, reload) {
   const big = centsInput(limits.bigWinAlertCents, { disabled: !can }), loss = centsInput(limits.dailyHouseLossAlertCents, { disabled: !can }), up = centsInput(limits.playerUpAlertCents, { disabled: !can });
   const drift = h('input', { class: 'input', type: 'number', step: '0.5', min: '0.5', value: limits.rtpDriftPct, disabled: !can });
   const minRounds = h('input', { class: 'input', type: 'number', min: '50', value: limits.rtpDriftMinRounds, disabled: !can });
+  const slotMult = h('input', { class: 'input', type: 'number', min: '1', max: '2000', value: limits.slotBigWinMultiple ?? 100, disabled: !can });
   return card('Alert limits', 'When each alert fires. Changes apply from the next check (every 2 minutes).', h('form', { class: 'stack', onsubmit: async e => {
     e.preventDefault();
     // Alert levels decide when you hear about money going out: your password and a fresh code.
     const step = await confirmStepUp({ title: 'Save alert limits?', confirmLabel: 'Save', body: 'Changes apply from the next check.' });
     if (!step) return;
-    try { await api('/settings/limits', { method: 'PUT', body: { bigWinAlertCents: readCents(big), dailyHouseLossAlertCents: readCents(loss), playerUpAlertCents: readCents(up), rtpDriftPct: Number(drift.value), rtpDriftMinRounds: Number(minRounds.value), ...step } }); toast('Alert limits saved.'); reload(); }
+    try { await api('/settings/limits', { method: 'PUT', body: { bigWinAlertCents: readCents(big), dailyHouseLossAlertCents: readCents(loss), playerUpAlertCents: readCents(up), rtpDriftPct: Number(drift.value), rtpDriftMinRounds: Number(minRounds.value), slotBigWinMultiple: Number(slotMult.value), ...step } }); toast('Alert limits saved.'); reload(); }
     catch (err) { toast(err.message, 'bad'); }
   } }, h('div', { class: 'form-grid' }, field('Big win over (TICS)', big, T.bigWinLimit), field('Casino or a game down today by (TICS)', loss, T.dailyLossLimit), field('Player up overall by (TICS)', up, T.playerUpLimit),
-    field('Payback off target by (points)', drift, T.driftLimit), field('Only after this many rounds', minRounds, 'Payback swings a lot over a few rounds. This avoids false alarms.')),
+    field('Payback off target by (points)', drift, T.driftLimit), field('Only after this many rounds', minRounds, 'Payback swings a lot over a few rounds. This avoids false alarms.'),
+    field('Slot win counts as big from (times the bet)', slotMult, T.slotBigWin)),
     can ? h('button', { class: 'btn primary' }, 'Save alert limits') : null));
 }
 

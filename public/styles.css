@@ -292,3 +292,20 @@ a.card.kpi{color:inherit;text-decoration:none}
 .flag-block{display:grid;gap:8px}
 .flag-players .table-wrap{margin:0}
 @media (max-width:640px){.flag-row{flex-wrap:wrap}.flag-row .flag-toggle{margin-left:20px}}
+/* Gods of Power round view: reels of every spin, winning cells lit. */
+.slot-sum{white-space:nowrap}.slot-sum .pill{margin-left:6px}
+.slot-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:8px 0 14px}
+.slot-summary>span{display:flex;flex-direction:column;gap:2px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--raise)}
+.slot-summary small{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.04em}.slot-summary b{font-size:16px}
+.spins{display:grid;gap:14px;grid-template-columns:repeat(auto-fill,minmax(360px,1fr))}
+@media (max-width:420px){.spins{grid-template-columns:1fr}}
+.spin{border:1px solid var(--line);border-radius:12px;padding:12px;background:var(--panel);min-width:0}
+.spin-head{display:flex;align-items:center;gap:8px;margin-bottom:8px}.spin-head .r{margin-left:auto}
+.slot-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;background:#0f5a37;border:2px solid #c9a54d;border-radius:10px;padding:6px}
+[data-theme=light] .slot-grid{background:#127045}
+.sym{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:52px;border-radius:8px;background:#0b3d26;color:#f1e6c2;border:1px solid #1d7a4e;min-width:0;padding:4px 2px}
+.sym b{font-size:17px;line-height:1}.sym small{font-size:9px;line-height:1.1;text-align:center;opacity:.85;overflow:hidden;text-overflow:ellipsis;max-width:100%;white-space:nowrap}
+.sym.s-W{background:#5a3a9a;border-color:#a78bfa}.sym.s-S{background:#8a5a12;border-color:#f5c451}
+.sym.lit{outline:2px solid var(--gold);outline-offset:-1px;box-shadow:0 0 10px #f5c45188;background:#1b8f5a}
+.spin-detail{margin-top:8px}.spin-detail .table-wrap{margin:0}
+.raw-json{white-space:pre-wrap;word-break:break-all;background:var(--raise);border:1px solid var(--line);border-radius:10px;padding:12px;max-height:420px;overflow:auto}

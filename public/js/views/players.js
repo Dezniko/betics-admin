@@ -2,12 +2,12 @@
 import { h, api, money, num, info, card, pageHead, loading, errorBox, empty, toast, confirmDialog, field, ago, short, flag, countryName, localTime, table, cap, segmented, usd, usdt, addrLink, txLink, shortAddr, isReal, setView, viewQuery, wdPill } from '../lib.js';
 import { T } from '../glossary.js';
 import { feltView, covered } from './felt.js';
+import { resultCell, resultBig, roundKind, slotRoundView, rawOutcomeView, rememberGames, gameName } from './outcome.js';
 
-const pocket = o => h('span', { class: `pocket ${o?.color || ''}` }, o?.pocket ?? '-');
 // Internal links inside table rows (the row itself opens something else, so stop the click there).
 const stop = e => e.stopPropagation();
 const playerLink = (id, label) => h('a', { class: 'mono tlink', href: `#/players/${encodeURIComponent(id)}`, onclick: stop, tip: 'Open this player' }, label);
-const gameLink = id => h('a', { class: 'tlink', href: `#/games/${encodeURIComponent(id)}`, onclick: stop, tip: 'Open this game' }, cap(id));
+const gameLink = id => h('a', { class: 'tlink', href: `#/games/${encodeURIComponent(id)}`, onclick: stop, tip: 'Open this game' }, gameName(id));
 const roundLink = (id, label = 'Round') => h('a', { class: 'tlink', href: `#/rounds/${encodeURIComponent(id)}`, onclick: stop }, label);
 const modePill = real => h('span', { class: `mode ${real ? 'real' : 'demo'}` }, real ? 'Real TICS' : 'Demo money');
 const houseCell = r => { const v = r.stake_cents - r.payout_cents; return h('span', { class: v >= 0 ? 'up' : 'down' }, money(v, { sign: true })); };
@@ -34,10 +34,14 @@ function flagRow(f) {
   return h('div', { class: 'flag-block' }, h('div', { class: 'flag-row' }, h('span', { class: 'dot' }), h('span', { class: 'flag-text' }, f.text), btn), list);
 }
 
+let roundsGame = '';
 export function roundsView() {
-  const q = { outcome: '', minWin: '', player: '' };
-  const root = h('div', { class: 'page' }, pageHead('Rounds', `Every ${isReal() ? 'real TICS' : 'demo'} round played, newest first. Filter to find big wins or one player, and open a round to see its bets and fairness proof.`));
+  const root = h('div', { class: 'page' }, pageHead('Rounds', `Every ${isReal() ? 'real TICS' : 'demo'} round played, newest first. Filter by game, big wins or one player, and open a round to see how it went and its fairness proof.`));
   const player = h('input', { class: 'input', placeholder: 'Player id' });
+  // Game filter: All, then every game on the platform (the list comes back with the rounds).
+  const game = h('select', { class: 'input', 'aria-label': 'Game', 'data-testid': 'game-filter' }, h('option', { value: '' }, 'All games'));
+  const fillGames = list => { if (!list?.length || game.options.length > 1) return; for (const g of list) game.append(h('option', { value: g.id, selected: g.id === roundsGame }, g.name)); };
+  game.onchange = () => { roundsGame = game.value; run(); };
   const minWin = h('input', { class: 'input', type: 'number', min: 0, placeholder: 'Player won at least (TICS)' });
   const outcome = h('select', { class: 'input' }, h('option', { value: '' }, 'Any result'), h('option', { value: 'player_won' }, 'Player won'), h('option', { value: 'house_won' }, 'House won'));
   const body = h('div', {}, loading());
@@ -46,21 +50,23 @@ export function roundsView() {
     if (player.value.trim()) p.set('player', player.value.trim());
     if (outcome.value) p.set('outcome', outcome.value);
     if (minWin.value) p.set('minWin', String(Math.round(Number(minWin.value) * 100)));
+    if (roundsGame) p.set('game', roundsGame);
     p.set('limit', '100');
     try {
       const d = await api(`/rounds?${p}`);
+      rememberGames(d.games); fillGames(d.games);
       body.replaceChildren(table([
         { label: 'When', render: r => h('span', { tip: localTime(r.created_at) }, ago(r.created_at)) },
         { label: 'Game', render: r => gameLink(r.game_id) },
         { label: 'Player', render: r => h('span', {}, `${flag(r.country)} `, playerLink(r.player_id, r.player_id.startsWith('0x') ? shortAddr(r.player_id) : short(r.player_id))) },
-        { label: 'Result', render: r => pocket(r.outcome) },
+        { label: 'Result', render: resultCell, tip: '<b>Result</b>Roulette: the winning number. Gods of Power: how many spins the round had (free spins in brackets), the payout as a multiple of the bet, and whether the 2,000x win cap was reached.' },
         { label: 'Bet', align: 'right', render: r => money(r.stake_cents) },
         { label: 'Paid', align: 'right', render: r => money(r.payout_cents), tip: T.paid },
         { label: 'House', align: 'right', render: houseCell, tip: 'What the casino made (green) or lost (red) on this round.' },
       ], d.rounds, { onRow: r => location.hash = `#/rounds/${encodeURIComponent(r.id)}`, emptyText: 'No rounds match these filters.' }));
     } catch (e) { body.replaceChildren(errorBox(e, run)); }
   };
-  root.append(h('form', { class: 'filters', onsubmit: e => { e.preventDefault(); run(); } }, player, outcome, minWin, h('button', { class: 'btn primary' }, 'Search')), body);
+  root.append(h('form', { class: 'filters', onsubmit: e => { e.preventDefault(); run(); } }, game, player, outcome, minWin, h('button', { class: 'btn primary' }, 'Search')), body);
   run();
   return root;
 }
@@ -83,22 +89,27 @@ export function roundView(ctx, id) {
   const root = h('div', { class: 'page' }, loading());
   (async () => {
     try {
-      const { round: r, ledger } = await api(`/rounds/${encodeURIComponent(id)}`);
+      const { round: r, ledger, games } = await api(`/rounds/${encodeURIComponent(id)}`);
+      rememberGames(games);
+      const kind = roundKind(r);
+      // Roulette: the bets on the felt. Gods of Power: the reels of every spin. Anything else: the stored outcome.
+      const play = kind === 'roulette' && Array.isArray(r.bets) ? betsCard(r) : kind === 'slot' ? slotRoundView(r) : rawOutcomeView(r);
+      const f = r.fairness || {};
       root.replaceChildren(h('a', { class: 'back', href: '#/rounds' }, '← All rounds'),
         h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, `Round ${short(r.id.split(':')[1] || r.id)} `, modePill(r.real_money)),
-          h('p', { class: 'sub' }, h('a', { href: `#/games/${encodeURIComponent(r.game_id)}` }, cap(r.game_id)), ` · ${localTime(r.created_at)} · maths setting ${r.math_id}, settings version ${r.config_version}`))),
+          h('p', { class: 'sub' }, h('a', { href: `#/games/${encodeURIComponent(r.game_id)}` }, gameName(r.game_id)), ` · ${localTime(r.created_at)} · maths setting ${r.math_id}, settings version ${r.config_version}`))),
         h('div', { class: 'kpis' },
-          h('div', { class: 'card kpi' }, h('div', { class: 'lab' }, 'Result'), h('div', { class: 'big' }, pocket(r.outcome))),
+          h('div', { class: 'card kpi' }, h('div', { class: 'lab' }, 'Result'), h('div', { class: 'big' }, resultBig(r))),
           h('div', { class: 'card kpi' }, h('div', { class: 'lab' }, 'Bet'), h('div', { class: 'big' }, money(r.stake_cents))),
           h('div', { class: 'card kpi' }, h('div', { class: 'lab' }, 'Paid', info(T.paid)), h('div', { class: 'big' }, money(r.payout_cents))),
           h('div', { class: 'card kpi' }, h('div', { class: 'lab' }, 'House'), h('div', { class: `big ${r.stake_cents - r.payout_cents >= 0 ? 'up' : 'down'}` }, money(r.stake_cents - r.payout_cents, { sign: true })))),
-        betsCard(r),
+        play,
         h('div', {},
           card('Fairness proof', T.fairness, h('dl', { class: 'proof' },
-            h('dt', {}, 'Lock (shown before the bet)'), h('dd', { class: 'mono' }, r.fairness.serverSeedHash),
-            h('dt', {}, 'Secret key (revealed after)'), h('dd', { class: 'mono' }, r.fairness.serverSeed),
-            h('dt', {}, 'Player lucky word + browser randomness'), h('dd', { class: 'mono' }, r.fairness.clientSeed),
-            h('dt', {}, 'Counter'), h('dd', { class: 'mono' }, r.fairness.nonce)))),
+            h('dt', {}, 'Lock (shown before the bet)'), h('dd', { class: 'mono' }, f.serverSeedHash ?? '-'),
+            h('dt', {}, 'Secret key (revealed after)'), h('dd', { class: 'mono' }, f.serverSeed ?? '-'),
+            h('dt', {}, 'Player lucky word + browser randomness'), h('dd', { class: 'mono' }, f.clientSeed ?? '-'),
+            h('dt', {}, 'Counter'), h('dd', { class: 'mono' }, f.nonce ?? '-')))),
         card('Money movements', T.ledger, table([
           { label: 'Type', render: l => l.type.replace(/_/g, ' ') }, { label: 'Amount', align: 'right', render: l => money(l.amount_cents, { sign: true }) },
           { label: 'Balance after', align: 'right', render: l => money(l.balance_after_cents) }], ledger)),
@@ -202,6 +213,7 @@ export function playerView(ctx, id) {
     try { render(await api(`/players/${id}`)); } catch (e) { root.replaceChildren(errorBox(e, load)); }
   }
   function render(d) {
+    rememberGames(d.gameList);
     const p = d.player;
     const actions = h('div', { class: 'actions' });
     const setStatus = async (status, title, text, danger) => {
@@ -220,8 +232,8 @@ export function playerView(ctx, id) {
       { label: 'Game', render: g => gameLink(g.gameId) }, { label: 'Rounds', align: 'right', render: g => num(g.rounds) },
       { label: 'Bet', align: 'right', render: g => money(g.betCents) }, { label: 'House', align: 'right', render: g => h('span', { class: g.betCents - g.paidCents >= 0 ? 'up' : 'down' }, money(g.betCents - g.paidCents, { sign: true })) }],
       d.games, { onRow: g => location.hash = `#/games/${encodeURIComponent(g.gameId)}`, emptyText: 'No rounds yet.' }));
-    const rounds = card('Recent rounds', `Their newest ${real ? 'real TICS' : 'demo'} rounds. Click one for the bets and fairness proof.`, table([
-      { label: 'When', render: r => ago(r.created_at) }, { label: 'Game', render: r => gameLink(r.game_id) }, { label: 'Result', render: r => pocket(r.outcome) },
+    const rounds = card('Recent rounds', `Their newest ${real ? 'real TICS' : 'demo'} rounds. Click one for how it went and its fairness proof.`, table([
+      { label: 'When', render: r => ago(r.created_at) }, { label: 'Game', render: r => gameLink(r.game_id) }, { label: 'Result', render: resultCell },
       { label: 'Bet', align: 'right', render: r => money(r.stake_cents) }, { label: 'Paid', align: 'right', render: r => money(r.payout_cents) }, { label: 'House', align: 'right', render: houseCell }],
       d.rounds, { onRow: r => location.hash = `#/rounds/${encodeURIComponent(r.id)}`, emptyText: 'No rounds yet.' }));
     const ledger = card('Money movements', `${T.ledger} Only ${real ? 'real TICS' : 'demo money'} movements are listed.`, table([
