@@ -9,8 +9,15 @@ import { fail, isInt, tics, usdt, sqlTime } from '../util.js';
 import { requirePerm, stepUp } from '../auth.js';
 import { audit, raiseAlert, raiseAlertIf } from '../audit.js';
 import { bank } from './bank.js';
+import { gameList } from './games.js';
 
-export const DEFAULT_LIMITS = { dailyHouseLossAlertCents: 200000, bigWinAlertCents: 500000, playerUpAlertCents: 300000, rtpDriftPct: 3, rtpDriftMinRounds: 500 };
+// slotBigWinMultiple: a slot round pays up to 2,000 times the bet, and free spins often pay tens of times the bet,
+// so a slot win only counts as a big win when it is ALSO at least this many times the bet (roulette pays at most
+// 36 times, so its amount limit alone is enough). 100 = 5% of the slot's cap.
+export const DEFAULT_LIMITS = { dailyHouseLossAlertCents: 200000, bigWinAlertCents: 500000, playerUpAlertCents: 300000, rtpDriftPct: 3, rtpDriftMinRounds: 500, slotBigWinMultiple: 100 };
+// Big-win rule shared by the scan and the tests: net win over the amount limit, and for a slot also over the multiple.
+export const isBigWin = (r, limits, kind) => r.payout_cents - r.stake_cents >= limits.bigWinAlertCents
+  && (kind !== 'slot' || r.payout_cents >= r.stake_cents * (limits.slotBigWinMultiple || 1));
 export const CHECK_EVERY_MS = 10 * 60e3;
 const RECONCILE_WINDOW_MS = 15 * 60e3, DRIFT_DAYS = 30, PAGE = 5000, MAX_PAGES = 10;
 const STATE_KEY = 'alerts_rounds';
@@ -78,6 +85,10 @@ export async function runChecks(db, now = new Date(), { force = false } = {}) {
   const since = mark || sqlTime(new Date(nowMs - 864e5));
   const limits = await getLimits(db);
   const scan = await scanRounds(db, nowMs, limits);
+  // Two rows, kept 60 s: alerts name the game and the slot rule needs its kind.
+  const gamesById = Object.fromEntries((await gameList(db)).map(g => [g.id, g]));
+  const gameName = id => gamesById[id]?.name || id;
+  const multiple = r => r.stake_cents ? `${(r.payout_cents / r.stake_cents).toLocaleString('en-US', { maximumFractionDigits: 1 })} times the bet` : '';
   // Claim this run: the state row only moves forward from the watermark we read, so two runs at once cannot
   // both count the same rounds. The claim, every alert and the run mark go in ONE batch (all or nothing):
   // if the batch fails, the watermark stays where it was and the next run raises the same alerts again.
@@ -90,8 +101,12 @@ export async function runChecks(db, now = new Date(), { force = false } = {}) {
   const WON = "SELECT 1 FROM settings WHERE key = ? AND json_extract(value, '$.run') = ?";
   const raise = (_db, a) => raiseAlertIf(db, a, WON, [STATE_KEY, run]);
   const out = [];
-  for (const r of scan.big) out.push(raise(db, { type: 'big_win', key: `big_win:${r.id}`, playerId: r.player_id, gameId: r.game_id, roundId: r.id,
-    title: `Big win: ${tics(r.payout_cents - r.stake_cents)} on ${r.game_id}`, details: `Player ${r.player_id.slice(0, 8)} bet ${tics(r.stake_cents)} and was paid ${tics(r.payout_cents)}.` }));
+  for (const r of scan.big) {
+    if (!isBigWin(r, limits, gamesById[r.game_id]?.kind)) continue;
+    out.push(raise(db, { type: 'big_win', key: `big_win:${r.id}`, playerId: r.player_id, gameId: r.game_id, roundId: r.id,
+      title: `Big win: ${tics(r.payout_cents - r.stake_cents)} on ${gameName(r.game_id)}`,
+      details: `Player ${r.player_id.slice(0, 8)} bet ${tics(r.stake_cents)} on ${gameName(r.game_id)} and was paid ${tics(r.payout_cents)} (${multiple(r)}).` }));
+  }
   // Players far up: totals only change when they play, so only check who played since the last run (everyone once, on the first run).
   const upRows = [];
   if (scan.bootstrap) upRows.push(...(await db.prepare('SELECT id, total_bet_cents, total_paid_cents FROM players WHERE total_paid_cents - total_bet_cents >= ?').bind(limits.playerUpAlertCents).all()).results);
@@ -111,7 +126,7 @@ export async function runChecks(db, now = new Date(), { force = false } = {}) {
   if (totalToday <= -limits.dailyHouseLossAlertCents) out.push(raise(db, { type: 'daily_loss', severity: 'critical', key: `daily_loss:${day}`,
     title: `The casino is ${tics(-totalToday)} down today`, details: `Players have won ${tics(-totalToday)} more than they bet so far today (UTC).` }));
   for (const g of today) if (g.profit <= -limits.dailyHouseLossAlertCents) out.push(raise(db, { type: 'game_loss', severity: 'critical', key: `game_loss:${g.game_id}:${day}`, gameId: g.game_id,
-    title: `${g.game_id} is ${tics(-g.profit)} down today`, details: 'One game has lost more than your daily limit.' }));
+    title: `${gameName(g.game_id)} is ${tics(-g.profit)} down today`, details: 'One game has lost more than your daily limit.' }));
   // Payback drift over 30 days from the kept sums; only the (tiny) games table is read.
   const sums = {};
   for (const d of Object.values(scan.state.days)) for (const [g, [n, bet, paid]] of Object.entries(d)) { const s = (sums[g] ||= { n: 0, bet: 0, paid: 0 }); s.n += n; s.bet += bet; s.paid += paid; }
@@ -121,7 +136,7 @@ export async function runChecks(db, now = new Date(), { force = false } = {}) {
     if (!s || s.n < limits.rtpDriftMinRounds || !s.bet) continue;
     const rtp = s.paid / s.bet * 100;
     if (Math.abs(rtp - g.rtp_target) > limits.rtpDriftPct) out.push(raise(db, { type: 'rtp_drift', key: `rtp_drift:${g.id}:${day}`, gameId: g.id,
-      title: `${g.id} payback is ${rtp.toFixed(1)}%, target ${g.rtp_target}%`, details: `Over the last 30 days (${s.n} rounds) the game paid back ${rtp.toFixed(1)}%. Short runs vary; a big gap over many rounds can mean a bug or abuse.` }));
+      title: `${gameName(g.id)} payback is ${rtp.toFixed(1)}%, target ${g.rtp_target}%`, details: `Over the last 30 days (${s.n} rounds) the game paid back ${rtp.toFixed(1)}%. Short runs vary; a big gap over many rounds can mean a bug or abuse.` }));
   }
   const problems = await db.prepare(`SELECT id, type, player_id, meta FROM events WHERE type IN ('fairness_fail','round_error') AND created_at >= ? AND created_at <= ?`).bind(since, nowSql).all();
   for (const e of problems.results) out.push(raise(db, { type: e.type, severity: e.type === 'fairness_fail' ? 'critical' : 'warning', key: `${e.type}:${e.id}`, playerId: e.player_id,
@@ -206,6 +221,7 @@ export async function updateLimits(db, admin, input, env = {}) {
     if (!isInt(body[k], 100, 1e13)) fail(400, 'Alert amounts must be at least 1 TICS.'); next[k] = body[k];
   }
   if ('rtpDriftPct' in body) { if (typeof body.rtpDriftPct !== 'number' || body.rtpDriftPct < 0.5 || body.rtpDriftPct > 50) fail(400, 'Payback drift must be between 0.5 and 50 points.'); next.rtpDriftPct = body.rtpDriftPct; }
+  if ('slotBigWinMultiple' in body) { if (!isInt(body.slotBigWinMultiple, 1, 2000)) fail(400, 'The slot big-win multiple must be between 1 and 2,000 times the bet.'); next.slotBigWinMultiple = body.slotBigWinMultiple; }
   if ('rtpDriftMinRounds' in body) { if (!isInt(body.rtpDriftMinRounds, 50, 1e9)) fail(400, 'Minimum rounds must be at least 50.'); next.rtpDriftMinRounds = body.rtpDriftMinRounds; }
   if (JSON.stringify(next) === JSON.stringify(before)) return next;
   await stepUp(db, env, admin, { code, password });

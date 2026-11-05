@@ -1,5 +1,6 @@
 // Money and activity summaries for the Overview and Money screens.
-import { periodRange, fail, viewReal, cached, moneyIs } from '../util.js';
+import { periodRange, fail, viewReal, cached, moneyIs, parseOutcome } from '../util.js';
+import { gameList } from './games.js';
 
 // 1 = real TICS, 0 = demo. Follows the admin's Real/Demo switch (see viewReal).
 export async function moneyMode(db, url) { return viewReal(url); }
@@ -50,7 +51,7 @@ export async function overview(db, url) {
     series: series.results.map(s => ({ t: s.t, betCents: s.bet, paidCents: s.paid, profitCents: s.bet - s.paid, rounds: s.rounds })),
     games: games.results.map(g => ({ id: g.id, name: g.name, enabled: !!g.enabled, mathId: g.math_id, mathLabel: g.math_label, rtpTarget: g.rtp_target, ...shape({ rounds: g.rounds, bet: g.bet, paid: g.paid, players: null }) })),
     devices: devices.results, countries: countries.results,
-    live: live.results.map(x => ({ ...x, outcome: JSON.parse(x.outcome) })),
+    live: live.results.map(x => ({ ...x, outcome: parseOutcome(x.outcome) })),
     bigWins: bigWins.results, alerts: alerts.results, openAlerts: openAlerts.n,
     limits: limits ? JSON.parse(limits.value) : {}, ticsFloat,
   };
@@ -64,16 +65,18 @@ export async function money(db, url) {
   const r = periodRange(period);
   const real = await moneyMode(db, url);
   return cached(db, `money:${period}:${group}:${real}`, 60e3, async () => {
-  const [rows, byGame, total] = await Promise.all([
+  const [rows, byGame, total, games] = await Promise.all([
     db.prepare(`SELECT ${bucketExpr(group)} AS t, game_id, COUNT(*) AS rounds, SUM(stake_cents) AS bet, SUM(payout_cents) AS paid, COUNT(DISTINCT player_id) AS players
       FROM rounds WHERE created_at >= ? AND created_at < ? AND ${moneyIs(real)} GROUP BY t, game_id ORDER BY t`).bind(r.from, r.to).all(),
     db.prepare(`SELECT game_id, COUNT(*) AS rounds, SUM(stake_cents) AS bet, SUM(payout_cents) AS paid FROM rounds WHERE created_at >= ? AND created_at < ? AND ${moneyIs(real)} GROUP BY game_id`).bind(r.from, r.to).all(),
     totals(db, r.from, r.to, real),
+    gameList(db),
   ]);
+  const names = Object.fromEntries(games.map(g => [g.id, g.name]));
   return {
-    period, group, realMoney: !!real, total: shape(total),
-    rows: rows.results.map(x => ({ t: x.t, gameId: x.game_id, rounds: x.rounds, betCents: x.bet, paidCents: x.paid, profitCents: x.bet - x.paid, players: x.players })),
-    byGame: byGame.results.map(g => ({ gameId: g.game_id, ...shape({ rounds: g.rounds, bet: g.bet, paid: g.paid, players: null }) })),
+    period, group, realMoney: !!real, total: shape(total), games,
+    rows: rows.results.map(x => ({ t: x.t, gameId: x.game_id, gameName: names[x.game_id] || x.game_id, rounds: x.rounds, betCents: x.bet, paidCents: x.paid, profitCents: x.bet - x.paid, players: x.players })),
+    byGame: byGame.results.map(g => ({ gameId: g.game_id, gameName: names[g.game_id] || g.game_id, ...shape({ rounds: g.rounds, bet: g.bet, paid: g.paid, players: null }) })),
   };
   });
 }

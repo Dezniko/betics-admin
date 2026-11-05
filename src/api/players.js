@@ -1,8 +1,9 @@
 // Rounds and players: search, detail and status.
-import { fail, isInt, text, viewReal, moneyIs, moneyIsPlayer } from '../util.js';
+import { fail, isInt, text, viewReal, moneyIs, moneyIsPlayer, parseOutcome } from '../util.js';
 import { requirePerm, can } from '../auth.js';
 import { audit, writeAudit } from '../audit.js';
 import { PLAYER_OWED } from './money.js';
+import { gameList, gameList as gameListFn } from './games.js';
 
 const clampLimit = v => Math.max(1, Math.min(200, Math.trunc(Number(v)) || 50));
 const clampOffset = v => Math.max(0, Math.min(100000, Math.trunc(Number(v)) || 0));
@@ -20,6 +21,8 @@ export async function listRounds(db, url) {
   const q = url.searchParams, real = viewReal(url), args = [];
   // One player's rounds: rounds_player (the + keeps the planner off the time index); the live feed: literal, so Real uses rounds_real_time.
   const where = [q.get('player') ? moneyIsPlayer(real) : moneyIs(real)];
+  // Game filter: rounds_game (game_id, created_at) serves "one game, newest first" directly (checked with
+  // EXPLAIN QUERY PLAN in test/slots.test.mjs), so no new index is needed.
   if (q.get('game')) { where.push('game_id = ?'); args.push(q.get('game')); }
   if (q.get('player')) { where.push('player_id = ?'); args.push(q.get('player')); }
   if (q.get('from')) { where.push('created_at >= ?'); args.push(q.get('from')); }
@@ -32,14 +35,19 @@ export async function listRounds(db, url) {
   const limit = clampLimit(q.get('limit'));
   const rows = await db.prepare(`SELECT id, player_id, game_id, math_id, stake_cents, payout_cents, outcome, country, device, real_money, created_at FROM rounds
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at DESC, id DESC LIMIT ?`).bind(...args, limit).all();
-  return { rounds: rows.results.map(r => ({ ...r, outcome: JSON.parse(r.outcome) })), limit, realMoney: !!real };
+  return { rounds: rows.results.map(r => ({ ...r, outcome: parseOutcome(r.outcome) })), limit, realMoney: !!real, games: await gameList(db) };
 }
+
+const parseOr = (text, fallback) => { try { return text == null ? fallback : JSON.parse(text); } catch { return fallback; } };
 
 export async function roundDetail(db, id) {
   const r = await db.prepare('SELECT * FROM rounds WHERE id = ?').bind(id).first();
   if (!r) fail(404, 'No round with that id.');
   const ledger = await db.prepare('SELECT * FROM ledger WHERE round_id = ? ORDER BY created_at').bind(id).all();
-  return { round: { ...r, outcome: JSON.parse(r.outcome), bets: JSON.parse(r.bets_json), fairness: JSON.parse(r.fairness_json) }, ledger: ledger.results };
+  const games = await gameList(db);
+  const game = games.find(g => g.id === r.game_id) || null;
+  return { round: { ...r, outcome: parseOutcome(r.outcome), bets: parseOr(r.bets_json, null), fairness: parseOr(r.fairness_json, {}) },
+    ledger: ledger.results, games, game: game ? { id: game.id, name: game.name, kind: game.kind } : null };
 }
 
 // Per-player totals for ONE kind of money (real TICS or demo), from the rounds.
@@ -177,6 +185,7 @@ export async function playerDetail(db, id, real = 1, admin = null) {
     db.prepare("SELECT value FROM settings WHERE key = 'tics_payments'").first(),
   ]);
   const pii = can(admin, 'pii:view');
+  const gameList = await gameListFn(db), names = Object.fromEntries(gameList.map(g => [g.id, g.name]));
   const view = pii ? playerView(p) : maskPlayer(playerView(p)), lim = limits ? JSON.parse(limits.value) : {};
   const flags = [];
   if (-view.houseProfitCents >= (lim.playerUpAlertCents || Infinity)) flags.push({ type: 'player_up', text: 'This player is unusually far up against the house.' });
@@ -191,8 +200,9 @@ export async function playerDetail(db, id, real = 1, admin = null) {
     piiMasked: !pii,
     identities: identities.results.map(i => ({ ...i, value: i.kind === 'guest' ? 'This browser (cookie)' : pii || i.kind === 'wallet' ? i.value : i.kind === 'email' ? maskEmail(i.value) : maskText(i.value) })),
     ledger: ledger.results.map(l => ({ ...l, meta: l.meta ? JSON.parse(l.meta) : null })),
-    rounds: rounds.results.map(r => ({ ...r, outcome: JSON.parse(r.outcome) })),
-    games: games.results.map(g => ({ gameId: g.game_id, rounds: g.rounds, betCents: g.bet, paidCents: g.paid })),
+    rounds: rounds.results.map(r => ({ ...r, outcome: parseOutcome(r.outcome) })),
+    games: games.results.map(g => ({ gameId: g.game_id, gameName: names[g.game_id] || g.game_id, rounds: g.rounds, betCents: g.bet, paidCents: g.paid })),
+    gameList,
     deposits: deposits.results, withdrawals: withdrawals.results,
     connections: pii ? connections.results : connections.results.map(c => ({ id: c.id, address: c.address, country: c.country, created_at: c.created_at, city: null, device: null, os: null, browser: null, language: null })),
     holdings: holdings.results,

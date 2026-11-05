@@ -1,5 +1,5 @@
 // Games: list, detail and live controls (on/off, limits, maths option).
-import { fail, isInt, text, moneyIs } from '../util.js';
+import { fail, isInt, text, moneyIs, cached, dropCache, parseOutcome } from '../util.js';
 import { requirePerm, stepUp } from '../auth.js';
 import { audit } from '../audit.js';
 import { bucketExpr } from './money.js';
@@ -32,15 +32,35 @@ export async function gameDetail(db, id, real = 1) {
   return {
     realMoney: !!real,
     game: view(g),
+    betLevels: g.kind === 'slot' ? SLOT_BET_LEVELS : null, capMultiple: g.kind === 'slot' ? SLOT_CAP_MULTIPLE : null,
     math: math.results.map(m => ({ id: m.id, label: m.label, description: m.description, rtpMin: m.rtp_min, rtpMax: m.rtp_max, rtpTarget: m.rtp_target })),
     series: series.results.map(s => ({ t: s.t, betCents: s.bet, paidCents: s.paid, profitCents: s.bet - s.paid, rounds: s.rounds,
       rtp: s.bet ? Math.round(s.paid / s.bet * 10000) / 100 : null })),
-    recent: recent.results.map(r => ({ ...r, outcome: JSON.parse(r.outcome) })),
+    recent: recent.results.map(r => ({ ...r, outcome: parseOutcome(r.outcome) })),
     totals: { ...totals, profit: totals.bet - totals.paid, rtp: totals.bet ? Math.round(totals.paid / totals.bet * 10000) / 100 : null },
   };
 }
 
+// Every game's id, name and kind: a two-row read, kept 60 s per isolate (the rounds feeds poll every 5 s).
+// Used to label rounds and alerts with the game's name instead of its id.
+export const gameList = db => cached(db, 'games:list', 60e3, async () => (await db.prepare('SELECT id, name, kind FROM games ORDER BY sort, name').all()).results);
+export const gameNameMap = async db => Object.fromEntries((await gameList(db)).map(g => [g.id, g.name]));
+
 const MAX_CENTS = 1_000_000_000_00;
+// Slot bet levels: the same list as BET_LEVELS in the game repo's backend/src/games/slotsMath.js (units of 0.01 TICS).
+// The game refuses any other stake, so the admin only lets the limits sit on one of these.
+export const SLOT_BET_LEVELS = [2000, 4000, 10000, 20000, 50000, 100000, 200000, 500000, 1000000];
+// One slot round can pay this many times the bet (capMultiplier in slotsMath.js); the max win must leave room for it.
+export const SLOT_CAP_MULTIPLE = 2000;
+// Per-kind limit rules. Roulette keeps its old checks; a slot's stakes must be bet levels.
+export function checkLimitsForKind(kind, next) {
+  if (next.minStakeCents > next.maxStakeCents) fail(400, 'The minimum bet cannot be above the maximum bet.');
+  if (kind !== 'slot') return;
+  const levels = SLOT_BET_LEVELS.map(u => (u / 100).toLocaleString('en-US')).join(', ');
+  if (!SLOT_BET_LEVELS.includes(next.minStakeCents)) fail(400, `For a slot the minimum bet must be one of its bet levels: ${levels} TICS.`);
+  if (!SLOT_BET_LEVELS.includes(next.maxStakeCents)) fail(400, `For a slot the maximum bet must be one of its bet levels: ${levels} TICS.`);
+  if (next.maxWinCents < next.minStakeCents * SLOT_CAP_MULTIPLE) fail(400, `A slot round can pay ${SLOT_CAP_MULTIPLE.toLocaleString('en-US')} times the bet: the maximum win must be at least ${(next.minStakeCents * SLOT_CAP_MULTIPLE / 100).toLocaleString('en-US')} TICS for the minimum bet.`);
+}
 // Bet limits and the maths option decide how much money a spin can move: changing them needs the
 // password and a fresh code. Switching a game off or editing its message does not.
 const GAME_MONEY_KEYS = ['minStakeCents', 'maxStakeCents', 'maxWinCents', 'maxHouseLossCents', 'mathId'];
@@ -55,7 +75,7 @@ export async function updateGame(db, admin, id, input, env = {}) {
   for (const k of ['minStakeCents', 'maxStakeCents', 'maxWinCents', 'maxHouseLossCents']) {
     if (k in body) { if (!isInt(body[k], 1, MAX_CENTS)) fail(400, `${k} must be a whole number of cents above zero.`); next[k] = body[k]; }
   }
-  if (next.minStakeCents > next.maxStakeCents) fail(400, 'The minimum bet cannot be above the maximum bet.');
+  checkLimitsForKind(g.kind, next);
   if ('mathId' in body) {
     const m = await db.prepare('SELECT * FROM game_math WHERE game_id = ? AND id = ?').bind(id, body.mathId).first();
     if (!m) fail(400, 'That maths setting does not exist for this game.');
@@ -72,5 +92,6 @@ export async function updateGame(db, admin, id, input, env = {}) {
       .bind(next.enabled ? 1 : 0, next.maintenanceMessage, next.minStakeCents, next.maxStakeCents, next.maxWinCents, next.maxHouseLossCents, next.mathId, id),
     audit(db, admin, 'game.update', { target: `game:${id}`, before, after, reason: typeof body.reason === 'string' ? body.reason.slice(0, 300) : null }),
   ]);
+  dropCache(db);
   return { game: view(await db.prepare('SELECT * FROM games WHERE id = ?').bind(id).first()), changed };
 }

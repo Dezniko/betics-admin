@@ -44,6 +44,8 @@ export async function readJson(request, limit = 65536) {
   }
 }
 
+// A stored round outcome is JSON written by the game; one row we cannot parse must not take a whole list down.
+export const parseOutcome = text => { try { return JSON.parse(text); } catch { return { raw: text }; } };
 export const isInt = (v, min = -Number.MAX_SAFE_INTEGER, max = Number.MAX_SAFE_INTEGER) => Number.isSafeInteger(v) && v >= min && v <= max;
 export const text = (v, min, max) => typeof v === 'string' && v.trim().length >= min && v.trim().length <= max;
 export const usd = cents => `$${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;

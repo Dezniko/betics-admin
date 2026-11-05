@@ -1,5 +1,6 @@
 // Analytics: who plays, from where, on what, when, and who comes back.
 import { periodRange, viewReal } from '../util.js';
+import { gameList } from './games.js';
 
 export async function analytics(db, url) {
   const q = url.searchParams;
@@ -37,6 +38,11 @@ export async function analytics(db, url) {
     db.prepare(`SELECT COUNT(*) AS n, AVG(CAST(json_extract(meta, '$.seconds') AS REAL)) AS avg FROM events WHERE ${E.where} AND type = 'session_end'`).bind(...E.args).first(),
     db.prepare(`SELECT k, COUNT(*) AS players, SUM(pr) AS profit, AVG(pr) AS per_player FROM (SELECT COALESCE(country,'??') AS k, (SELECT COALESCE(SUM(x.stake_cents - x.payout_cents),0) FROM rounds x WHERE x.player_id = p.id AND x.real_money = ?) AS pr FROM players p WHERE EXISTS (SELECT 1 FROM rounds y WHERE y.player_id = p.id AND y.real_money = ?)) GROUP BY k ORDER BY profit DESC LIMIT 12`).bind(real, real).all(),
   ]);
+  // Every game appears in the By game table, with a zero row when nobody played it in the period.
+  const allGames = await gameList(db), names = Object.fromEntries(allGames.map(g => [g.id, g.name]));
+  const played = Object.fromEntries(games.results.map(g => [g.game_id, g]));
+  const byGame = [...allGames.map(g => played[g.id] || { game_id: g.id, rounds: 0, players: 0, bet: 0, paid: 0, avg_bet: 0 }),
+    ...games.results.filter(g => !names[g.game_id])];
   const retention = [];
   for (const days of [1, 7, 30]) {
     const row = await db.prepare(`SELECT COUNT(*) AS cohort, SUM(CASE WHEN EXISTS (SELECT 1 FROM events e WHERE e.player_id = p.id AND e.created_at >= datetime(p.joined_at, '+${days} days')) THEN 1 ELSE 0 END) AS back
@@ -47,8 +53,8 @@ export async function analytics(db, url) {
     period: q.get('period') || '30d', filters: f, realMoney: !!real,
     daily: daily.results, countries: countries.results, devices: devices.results, os: oses.results, browsers: browsers.results,
     languages: languages.results, screens: screens.results, heat: heat.results,
-    games: games.results.map(g => ({ gameId: g.game_id, rounds: g.rounds, players: g.players, betCents: g.bet, paidCents: g.paid, avgBetCents: Math.round(g.avg_bet || 0),
-      rtp: g.bet ? Math.round(g.paid / g.bet * 10000) / 100 : null })),
+    games: byGame.map(g => ({ gameId: g.game_id, gameName: names[g.game_id] || g.game_id, rounds: g.rounds, players: g.players, betCents: g.bet || 0, paidCents: g.paid || 0,
+      profitCents: (g.bet || 0) - (g.paid || 0), avgBetCents: Math.round(g.avg_bet || 0), rtp: g.bet ? Math.round(g.paid / g.bet * 10000) / 100 : null })),
     funnel: [
       { step: 'Visited', n: funnelVisit.n }, { step: 'Played a round', n: funnelPlay.n },
       { step: 'Connected a wallet', n: funnelWallet.n }, { step: 'Deposited', n: funnelDeposit.n },
