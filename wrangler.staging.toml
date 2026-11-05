@@ -1,0 +1,35 @@
+# Staging admin: reads the staging game's database and wallets. Deploy with --config wrangler.staging.toml.
+name = "betics-admin-staging"
+main = "src/index.js"
+account_id = "046a96b420dcb9935276d06833941737"
+compatibility_date = "2026-09-01"
+workers_dev = false
+preview_urls = false
+routes = [{ pattern = "admin-staging.betics.io", custom_domain = true }]
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "betics-staging-db"
+database_id = "103c5613-0ea3-429c-a023-66b675a4533f"
+
+[[durable_objects.bindings]]
+name = "WALLETS"
+class_name = "DemoCasino"
+script_name = "betics-staging"
+
+[vars]
+GAME_URL = "https://staging.betics.io"
+
+[triggers]
+crons = ["*/2 * * * *"]
+
+[observability]
+enabled = true
+head_sampling_rate = 0.2
+# Secrets: SESSION_PEPPER, INTERNAL_SECRET (same as betics-staging), TREASURY_SECRET (placeholder; no payouts Worker on staging).
