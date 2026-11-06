@@ -123,9 +123,26 @@ ok('analytics By game table lists both games', /By game/.test(t) && /Gods of Pow
 await p.ev(`document.querySelector('main .grid3 .card:first-child')?.scrollIntoView()`); await sleep(300);
 await p.shot('analytics-bygame-table-1280');
 
-// Alerts limits form has the slot field.
+// Alerts limits form has the slot fields: big-win multiple plus the slot payback drift band and sample.
 await visit('alerts');
-ok('alert limits form has the slot multiple', /times the bet/.test(await text()));
+t = await text();
+ok('alert limits form has the slot multiple', /times the bet/.test(t));
+ok('alert limits form has the slot payback fields', /Slot payback off target by \(points\)/.test(t) && /Slot: only after this many rounds/.test(t), '');
+ok('alert limits card says only real-money rounds count', await p.ev(`[...document.querySelectorAll('.card h3 [data-tip]')].some(i => /Only real-money rounds count/.test(i.dataset.tip))`));
+// Label text without the tooltip marker.
+const limitInputs = () => p.ev(`[...document.querySelectorAll('form.stack label.field')].map(l => [l.querySelector('span')?.firstChild?.textContent, l.querySelector('input')?.value])`);
+let li = await limitInputs();
+ok('slot payback defaults are 8 points and 20,000 rounds', JSON.stringify(li).includes('["Slot payback off target by (points)","8"]') && JSON.stringify(li).includes('["Slot: only after this many rounds","20000"]'), JSON.stringify(li));
+// Save with new values: the form asks for the password and a fresh code (step-up), then the page reloads with them.
+await p.ev(`(()=>{const f=[...document.querySelectorAll('form.stack label.field')];const set=(lab,v)=>{const i=f.find(l=>l.querySelector('span')?.firstChild?.textContent===lab).querySelector('input');i.value=v;i.dispatchEvent(new Event('input'));};set('Slot payback off target by (points)','10');set('Slot: only after this many rounds','50000');return true})()`);
+await p.ev(`[...document.querySelectorAll('form.stack button')].find(b=>b.textContent==='Save alert limits').click()`); await sleep(500);
+ok('saving alert limits asks for password and code', await p.ev(`!!document.querySelector('.modal input[type=password]') && !!document.querySelector('.modal input.code')`));
+await p.type('.modal input[type=password]', 'Correct horse 42 battery');
+await p.type('.modal input.code', totp(SECRET, Date.now() + 30000));
+await p.ev(`[...document.querySelectorAll('.modal .modal-actions button')].find(b=>b.textContent==='Save').click()`); await sleep(2000);
+li = await limitInputs();
+ok('slot payback limits saved and shown again', JSON.stringify(li).includes('["Slot payback off target by (points)","10"]') && JSON.stringify(li).includes('["Slot: only after this many rounds","50000"]') && JSON.stringify(li).includes('["Payback off target by (points)","3"]'), JSON.stringify(li));
+await p.shot('alerts-limits-1280');
 
 ok('no page errors', p.errors.length === 0, p.errors.join(' || ').slice(0, 500));
 writeFileSync(`${OUT}/results.json`, JSON.stringify(results, null, 2));

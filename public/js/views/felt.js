@@ -1,6 +1,7 @@
 // Draws a round's bets on a small roulette felt (same layout as the game:
 // 0 on the left, 3 rows of 12, columns, dozens and even-money boxes).
 import { h, money } from '../lib.js';
+import { betsList, coveredBy } from '../bets.js';
 
 const RED = new Set([1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]);
 const W = 46, H = 46, X0 = 46, ROWS_H = H * 3, DOZ_H = 38, EVEN_H = 38;
@@ -23,10 +24,8 @@ const OUTSIDE = {
   column1: { x: X0 + W * 12 + W / 2, y: H * 2.5, covers: n => n > 0 && n % 3 === 1, label: '2 to 1' },
 };
 
-export function covered(bet) {
-  if (OUTSIDE[bet.type]) return Array.from({ length: 37 }, (_, n) => n).filter(OUTSIDE[bet.type].covers);
-  return bet.type === 'straight' ? [bet.value] : [...bet.value];
-}
+// Which pockets a chip covers (pure, in bets.js so the unit tests can load it without a browser).
+export const covered = bet => coveredBy(bet, type => OUTSIDE[type]?.covers);
 
 // Where the chip sits, matching how it is placed on the game's felt.
 function anchor(bet) {
@@ -71,7 +70,7 @@ export function feltView(bets, pocket) {
     svg.append(s('circle', { cx: c.x, cy: c.y - 15, r: 5, class: 'felt-dolly' }));
   }
   // Chips: winners glow, losers dim.
-  bets.forEach((b, i) => {
+  betsList(bets).forEach((b, i) => {
     const a = anchor(b), won = pocket != null && covered(b).includes(pocket);
     const g = s('g', { class: `felt-chip ${won ? 'won' : 'lost'}`, tabindex: 0 });
     g.append(s('title', {}, `${b.type}${b.value != null ? ' ' + [].concat(b.value).join(', ') : ''}: ${money(b.amountCents)}${won ? ' (won)' : ''}`));

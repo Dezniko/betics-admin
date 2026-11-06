@@ -22,8 +22,9 @@ export async function listRounds(db, url) {
   // One player's rounds: rounds_player (the + keeps the planner off the time index); the live feed: literal, so Real uses rounds_real_time.
   const where = [q.get('player') ? moneyIsPlayer(real) : moneyIs(real)];
   // Game filter: rounds_game (game_id, created_at) serves "one game, newest first" directly (checked with
-  // EXPLAIN QUERY PLAN in test/slots.test.mjs), so no new index is needed.
-  if (q.get('game')) { where.push('game_id = ?'); args.push(q.get('game')); }
+  // EXPLAIN QUERY PLAN in test/slots.test.mjs), so no new index is needed. With a player filter too, the "+"
+  // keeps the planner on rounds_player (one player's rows, not every round of a popular game).
+  if (q.get('game')) { where.push(q.get('player') ? '+game_id = ?' : 'game_id = ?'); args.push(q.get('game')); }
   if (q.get('player')) { where.push('player_id = ?'); args.push(q.get('player')); }
   if (q.get('from')) { where.push('created_at >= ?'); args.push(q.get('from')); }
   if (q.get('to')) { where.push('created_at < ?'); args.push(q.get('to')); }

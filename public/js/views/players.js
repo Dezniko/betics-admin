@@ -3,6 +3,7 @@ import { h, api, money, num, info, card, pageHead, loading, errorBox, empty, toa
 import { T } from '../glossary.js';
 import { feltView, covered } from './felt.js';
 import { resultCell, resultBig, roundKind, slotRoundView, rawOutcomeView, rememberGames, gameName } from './outcome.js';
+import { betsList, hasChips } from '../bets.js';
 
 // Internal links inside table rows (the row itself opens something else, so stop the click there).
 const stop = e => e.stopPropagation();
@@ -72,14 +73,16 @@ export function roundsView() {
 }
 
 function betsCard(r) {
+  // Chips as a list whatever shape was stored (a slot round keeps { stake, lines }; the felt needs an array).
+  const bets = betsList(r.bets);
   const won = b => covered(b).includes(r.outcome.pocket);
   const list = () => table([
     { label: 'Bet', render: b => b.value == null ? cap(b.type) : `${cap(b.type)} ${Array.isArray(b.value) ? b.value.join(', ') : b.value}` },
     { label: 'Amount', align: 'right', render: b => money(b.amountCents) },
-    { label: 'Result', render: b => won(b) ? h('span', { class: 'pill on' }, 'Won') : h('span', { class: 'pill off' }, 'Lost') }], r.bets);
+    { label: 'Result', render: b => won(b) ? h('span', { class: 'pill on' }, 'Won') : h('span', { class: 'pill off' }, 'Lost') }], bets);
   const body = h('div', {}, list());
   const mode = localStorage.getItem('noir-admin-betview') || 'list';
-  const show = v => { localStorage.setItem('noir-admin-betview', v); body.replaceChildren(v === 'table' ? feltView(r.bets, r.outcome.pocket) : list()); };
+  const show = v => { localStorage.setItem('noir-admin-betview', v); body.replaceChildren(v === 'table' ? feltView(bets, r.outcome.pocket) : list()); };
   if (mode === 'table') show('table');
   return h('section', { class: 'card' }, h('h3', {}, 'Bets', info('<b>Bets</b>Every chip in this round. Table view shows them on the felt: the gold marker is the winning number, glowing chips won, faded chips lost.'),
     h('span', { class: 'r' }, segmented([['list', 'List'], ['table', 'Table view']], mode, show))), body);
@@ -93,7 +96,8 @@ export function roundView(ctx, id) {
       rememberGames(games);
       const kind = roundKind(r);
       // Roulette: the bets on the felt. Gods of Power: the reels of every spin. Anything else: the stored outcome.
-      const play = kind === 'roulette' && Array.isArray(r.bets) ? betsCard(r) : kind === 'slot' ? slotRoundView(r) : rawOutcomeView(r);
+      // A roulette round whose bets are not a chip list (an old or odd row) shows the stored data instead of a blank page.
+      const play = kind === 'roulette' && hasChips(r.bets) ? betsCard(r) : kind === 'slot' ? slotRoundView(r) : rawOutcomeView(r);
       const f = r.fairness || {};
       root.replaceChildren(h('a', { class: 'back', href: '#/rounds' }, '← All rounds'),
         h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, `Round ${short(r.id.split(':')[1] || r.id)} `, modePill(r.real_money)),

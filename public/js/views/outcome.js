@@ -62,7 +62,8 @@ function spinCard(spin, i, lineBetCents, stakeCents) {
 export function slotRoundView(r) {
   const o = r.outcome || {};
   const spins = Array.isArray(o.spins) ? o.spins : [];
-  const lines = r.bets?.lines || LINES.length;
+  // Slot bets are { stake, lines }; an array (a roulette-shaped row) or nothing falls back to every line.
+  const lines = (r.bets && !Array.isArray(r.bets) && Number(r.bets.lines) > 0) ? Number(r.bets.lines) : LINES.length;
   const lineBetCents = r.stake_cents && lines ? r.stake_cents / lines : null;
   const s = slotSummary(o, { stakeCents: r.stake_cents, payoutCents: r.payout_cents });
   const sum = h('div', { class: 'slot-summary' },
