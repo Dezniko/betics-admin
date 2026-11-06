@@ -53,8 +53,9 @@ function setup() {
   };
   const seedPlayer = (id, extra = {}) => DB.raw.prepare(`INSERT INTO players (id, country, device, balance_cents, total_bet_cents, total_paid_cents, rounds) VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .run(id, extra.country || 'GB', extra.device || 'mobile', extra.balance ?? 100000, extra.bet ?? 0, extra.paid ?? 0, extra.rounds ?? 0);
-  const seedRound = (id, player, stake, payout, when = null) => DB.raw.prepare(`INSERT INTO rounds (id, player_id, game_id, math_id, config_version, stake_cents, payout_cents, outcome, bets_json, fairness_json, currency, country, device, created_at)
-    VALUES (?, ?, 'roulette', 'standard', 1, ?, ?, '{"pocket":7,"color":"red"}', '[]', '{}', 'USDT', 'GB', 'mobile', COALESCE(?, datetime('now')))`).run(id, player, stake, payout, when);
+  // Demo rounds unless real = 1 (alerts only count real play).
+  const seedRound = (id, player, stake, payout, when = null, real = 0) => DB.raw.prepare(`INSERT INTO rounds (id, player_id, game_id, math_id, config_version, stake_cents, payout_cents, outcome, bets_json, fairness_json, currency, real_money, country, device, created_at)
+    VALUES (?, ?, 'roulette', 'standard', 1, ?, ?, '{"pocket":7,"color":"red"}', '[]', '{}', 'USDT', ?, 'GB', 'mobile', COALESCE(?, datetime('now')))`).run(id, player, stake, payout, real, when);
   return { DB, env, call, addAdmin, finishSetup, seedPlayer, seedRound, adjustments, get cookie() { return cookie; }, set cookie(v) { cookie = v; } };
 }
 
@@ -174,7 +175,7 @@ test('alerts: big wins, players far up and daily losses are raised once and sent
   const s = setup();
   // Alert limits are in 0.01 TICS units (migration 0003): big win 200,000 TICS, daily loss 1,000,000 TICS.
   s.seedPlayer('p1', { bet: 1000, paid: 200000000 });
-  s.seedRound('r1', 'p1', 1000, 200000000);
+  s.seedRound('r1', 'p1', 1000, 200000000, null, 1);
   const n1 = await runChecks(s.DB);
   const types = s.DB.raw.prepare('SELECT type FROM alerts ORDER BY type').all().map(a => a.type);
   assert.deepEqual(types, ['big_win', 'daily_loss', 'game_loss', 'player_up']);

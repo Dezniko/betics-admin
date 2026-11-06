@@ -348,7 +348,7 @@ test('L15/L13/L16: HSTS covers subdomains; the invite script hides the link and 
 });
 
 // ---------- D1 read load ----------
-const seedRound = (s, id, player, stake, payout, when = null, real = 0) => s.DB.raw.prepare(`INSERT INTO rounds (id, player_id, game_id, math_id, config_version, stake_cents, payout_cents, outcome, bets_json, fairness_json, currency, real_money, created_at)
+const seedRound = (s, id, player, stake, payout, when = null, real = 1) => s.DB.raw.prepare(`INSERT INTO rounds (id, player_id, game_id, math_id, config_version, stake_cents, payout_cents, outcome, bets_json, fairness_json, currency, real_money, created_at)
   VALUES (?, ?, 'roulette', 'standard', 1, ?, ?, '{}', '[]', '{}', 'TICS', ?, COALESCE(?, datetime('now')))`).run(id, player, stake, payout, real, when);
 
 test('read load: checks run at most every 10 minutes, read each round once (late copies too), and keep 30-day sums in one row', async () => {
@@ -452,9 +452,9 @@ test('H1: Real feeds use rounds_real_time (literal real_money = 1), Demo uses ro
   const ovDemo = await run(() => overview(db, U('money=play&period=7d')));
   assert.match(ovDemo.find(x => /LIMIT 15/.test(x.q)).plan, /SCAN rounds USING INDEX rounds_time/, 'demo live feed: no full scan + sort');
   for (const x of ovDemo) assert.doesNotMatch(x.plan, /SCAN rounds(?! USING)/, x.q);
-  // L1: the alerts bootstrap reads 30 days through the time index, not the whole table by rowid.
+  // L1: the alerts bootstrap reads 30 days of REAL rounds through the partial index, not the whole table by rowid.
   const boot = await run(() => runChecks(db, new Date(), { force: true }));
-  for (const x of boot.filter(x => /\+rowid <= \?/.test(x.q))) assert.match(x.plan, /USING (COVERING )?INDEX rounds_time/, x.q);
+  for (const x of boot.filter(x => /\+rowid <= \?/.test(x.q))) { assert.match(x.q, /real_money = 1/, x.q); assert.match(x.plan, /SEARCH rounds USING INDEX rounds_real_time/, x.q); }
   assert.equal(boot.filter(x => /\+rowid <= \?/.test(x.q)).length, 2);
 });
 

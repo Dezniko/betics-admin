@@ -35,6 +35,8 @@ House currency is TICS; every `*_cents` / `*_units` amount is 0.01 TICS and is s
 
 Every 2 minutes: scheduled messages, alert checks (big wins, players far up, daily and per-game losses, payback drift, fairness failures, ledger/balance mismatch) and Telegram delivery.
 
+Alert rules on rounds (big win, per-game and casino daily loss, payback drift) count real-money rounds only. Demo play (every player starts with 100,000 demo TICS and can bet up to 10,000 a spin) is left out completely: there is no demo alert of any level, so a demo slot hit can never page anyone on Telegram. The scan still reads every new round once by rowid (demo rows only move the watermark). Payback drift has its own rule per game kind: roulette uses `rtpDriftPct` / `rtpDriftMinRounds` (3 points after 500 rounds by default), slots use `rtpDriftPctSlot` / `rtpDriftMinRoundsSlot` (8 points after 20,000 rounds by default, 1 to 50 points and 1,000 to 1,000,000 rounds), because a single 2,000x slot hit moves a small sample's payback by tens of points. All six limits are on the Alerts page and need the password plus a fresh code to change.
+
 ## Why publishing this is safe
 
 Access never depends on the code being secret. No password, key or secret is stored here: the password pepper, the internal and treasury secrets and the Telegram token are Cloudflare Worker secrets, and admin accounts, password hashes and authenticator secrets live only in the database. Strangers are only served the sign-in page (every other file and API request is refused until you are signed in), and signing in needs the password and a fresh authenticator code. `scripts/invite-owner.sh` only works for someone who already has access to the Cloudflare account.
@@ -47,9 +49,11 @@ npm test                         # API tests on an in-memory D1 stand-in
 wrangler dev --port 8790 --persist-to ../betics/.wrangler/state   # shares the core's local D1
 node test/browser/admin-qa.mjs   # real-browser QA (headless Chrome on CDP :9354, CDP_PORT to change)
 node test/browser/tics-qa.mjs    # Treasury, Fees, Payments, Players in both themes and at 390px (ADMIN_URL, CDP_PORT, SETUP_LINK, QA_OUT)
-node test/browser/slots-qa.mjs   # Gods of Power: Games page, slot round view, Rounds and Money game filters, Analytics By game, at 1280 and 390px
+node test/browser/slots-qa.mjs   # Gods of Power: Games page, slot round view, Rounds and Money game filters, Analytics By game, Alert limits (slot fields, step-up save), at 1280 and 390px
 wrangler deploy
 ```
+
+Local recipe for `tics-qa.mjs` and `slots-qa.mjs` (one state serves both): `npx wrangler d1 execute betics-db --local --persist-to DIR --file test/schema.sql`, then `--file test/browser/qa-seed.sql` (made-up wallet player with real roulette and Gods of Power rounds, a guest with demo rounds, a queued payout, deposits, holdings, payouts paused), `sh scripts/invite-owner.sh qa@example.com QA --persist-to DIR --out FILE`, `npx wrangler dev --port 8790 --persist-to DIR`, headless Chrome with `--remote-debugging-port=9354`, then `SETUP_LINK=$(cat FILE) QA_OUT=OUT node test/browser/slots-qa.mjs` and `ADMIN_URL=http://127.0.0.1:8790 QA_OUT=OUT node test/browser/tics-qa.mjs` (copy `qa-totp-secret.txt` between QA_OUT dirs, or pass SETUP_LINK only to the first suite).
 
 Secrets: `SESSION_PEPPER`, `INTERNAL_SECRET` (same value as `betics` and `betics-payouts`), `TREASURY_SECRET` (same value as `betics-payouts`; without it treasury sends answer "Treasury sends are not set up yet."), `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
 

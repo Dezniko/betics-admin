@@ -5,6 +5,9 @@
 // only look at what is NEW. Rounds are read once each, by rowid watermark (late copies from a
 // wallet retry are still seen exactly once); per-day, per-game sums for the last 30 days are
 // kept in the settings row 'alerts_rounds', so daily loss and payback drift need no rescans.
+// Only REAL rounds (real_money = 1) count: demo play starts every player with 100,000 TICS and lets them bet up to
+// 10,000 TICS a spin, so a demo slot hit would otherwise page the owners with a false URGENT loss. Demo rows still
+// move the watermark (read once, skipped), so no demo alert exists at all, not even an info one.
 import { fail, isInt, tics, usdt, sqlTime } from '../util.js';
 import { requirePerm, stepUp } from '../auth.js';
 import { audit, raiseAlert, raiseAlertIf } from '../audit.js';
@@ -14,7 +17,14 @@ import { gameList } from './games.js';
 // slotBigWinMultiple: a slot round pays up to 2,000 times the bet, and free spins often pay tens of times the bet,
 // so a slot win only counts as a big win when it is ALSO at least this many times the bet (roulette pays at most
 // 36 times, so its amount limit alone is enough). 100 = 5% of the slot's cap.
-export const DEFAULT_LIMITS = { dailyHouseLossAlertCents: 200000, bigWinAlertCents: 500000, playerUpAlertCents: 300000, rtpDriftPct: 3, rtpDriftMinRounds: 500, slotBigWinMultiple: 100 };
+// rtpDriftPctSlot / rtpDriftMinRoundsSlot: a slot's payback swings far more than roulette's (one 2,000x hit moves a
+// 5,000-round sample by 40 points), so slots get their own wider band and a much bigger sample before drift is reported.
+export const DEFAULT_LIMITS = { dailyHouseLossAlertCents: 200000, bigWinAlertCents: 500000, playerUpAlertCents: 300000, rtpDriftPct: 3, rtpDriftMinRounds: 500, slotBigWinMultiple: 100,
+  rtpDriftPctSlot: 8, rtpDriftMinRoundsSlot: 20000 };
+// The drift rule for one game kind: slots use the slot band and sample, every other game the standard ones.
+export const driftRule = (limits, kind) => kind === 'slot'
+  ? { pct: limits.rtpDriftPctSlot ?? DEFAULT_LIMITS.rtpDriftPctSlot, minRounds: limits.rtpDriftMinRoundsSlot ?? DEFAULT_LIMITS.rtpDriftMinRoundsSlot }
+  : { pct: limits.rtpDriftPct, minRounds: limits.rtpDriftMinRounds };
 // Big-win rule shared by the scan and the tests: net win over the amount limit, and for a slot also over the multiple.
 export const isBigWin = (r, limits, kind) => r.payout_cents - r.stake_cents >= limits.bigWinAlertCents
   && (kind !== 'slot' || r.payout_cents >= r.stake_cents * (limits.slotBigWinMultiple || 1));
@@ -48,25 +58,29 @@ async function scanRounds(db, now, limits) {
   const big = [], players = new Set();
   let bootstrap = false;
   if (!state || state.rid > maxRid) {
-    // First run (or the table was rebuilt): one indexed pass over the last 30 days, then only new rows.
+    // First run (or the table was rebuilt): one pass over the last 30 days of REAL rounds (the literal real_money = 1
+    // puts both queries on the partial index rounds_real_time, checked with EXPLAIN in the tests), then only new rows.
     bootstrap = true;
     state = { rid: maxRid, days: {} };
     const agg = await db.prepare(`SELECT substr(created_at, 1, 10) AS d, game_id, COUNT(*) AS n, COALESCE(SUM(stake_cents),0) AS bet, COALESCE(SUM(payout_cents),0) AS paid
-      FROM rounds WHERE created_at >= ? AND +rowid <= ? GROUP BY d, game_id`).bind(`${cutoffDay} 00:00:00`, maxRid).all();
+      FROM rounds WHERE created_at >= ? AND +rowid <= ? AND real_money = 1 GROUP BY d, game_id`).bind(`${cutoffDay} 00:00:00`, maxRid).all();
     for (const r of agg.results) addTo(state.days, r.d, r.game_id, r.n, r.bet, r.paid);
-    const wins = await db.prepare(`SELECT id, player_id, game_id, stake_cents, payout_cents FROM rounds WHERE created_at >= ? AND +rowid <= ? AND payout_cents - stake_cents >= ?`)
+    const wins = await db.prepare(`SELECT id, player_id, game_id, stake_cents, payout_cents FROM rounds WHERE created_at >= ? AND +rowid <= ? AND real_money = 1 AND payout_cents - stake_cents >= ?`)
       .bind(sqlTime(new Date(now - 864e5)), maxRid, limits.bigWinAlertCents).all();
     big.push(...wins.results);
   } else {
     for (let page = 0; page < MAX_PAGES; page++) {
-      const rows = (await db.prepare(`SELECT rowid AS rid, id, player_id, game_id, stake_cents, payout_cents, created_at FROM rounds WHERE rowid > ? ORDER BY rowid LIMIT ?`)
+      // Pages of raw rows by rowid (each row read once, at most PAGE x MAX_PAGES a run). Demo rows only move the
+      // watermark: filtering them in SQL under the LIMIT would let one page read an unbounded run of demo rows.
+      const rows = (await db.prepare(`SELECT rowid AS rid, id, player_id, game_id, stake_cents, payout_cents, real_money, created_at FROM rounds WHERE rowid > ? ORDER BY rowid LIMIT ?`)
         .bind(state.rid, PAGE).all()).results;
       for (const r of rows) {
+        state.rid = r.rid;
+        if (Number(r.real_money) !== 1) continue;
         const day = String(r.created_at).slice(0, 10);
         if (day >= cutoffDay) addTo(state.days, day, r.game_id, 1, r.stake_cents, r.payout_cents);
         if (r.payout_cents - r.stake_cents >= limits.bigWinAlertCents) big.push(r);
         players.add(r.player_id);
-        state.rid = r.rid;
       }
       if (rows.length < PAGE) break;
     }
@@ -127,16 +141,17 @@ export async function runChecks(db, now = new Date(), { force = false } = {}) {
     title: `The casino is ${tics(-totalToday)} down today`, details: `Players have won ${tics(-totalToday)} more than they bet so far today (UTC).` }));
   for (const g of today) if (g.profit <= -limits.dailyHouseLossAlertCents) out.push(raise(db, { type: 'game_loss', severity: 'critical', key: `game_loss:${g.game_id}:${day}`, gameId: g.game_id,
     title: `${gameName(g.game_id)} is ${tics(-g.profit)} down today`, details: 'One game has lost more than your daily limit.' }));
-  // Payback drift over 30 days from the kept sums; only the (tiny) games table is read.
+  // Payback drift over 30 days from the kept sums; only the (tiny) games table is read. The band and the
+  // sample depend on the game's kind (slots: wider band, far more rounds).
   const sums = {};
   for (const d of Object.values(scan.state.days)) for (const [g, [n, bet, paid]] of Object.entries(d)) { const s = (sums[g] ||= { n: 0, bet: 0, paid: 0 }); s.n += n; s.bet += bet; s.paid += paid; }
-  const targets = (await db.prepare('SELECT g.id, m.rtp_target FROM games g JOIN game_math m ON m.game_id = g.id AND m.id = g.math_id').all()).results;
+  const targets = (await db.prepare('SELECT g.id, g.kind, m.rtp_target FROM games g JOIN game_math m ON m.game_id = g.id AND m.id = g.math_id').all()).results;
   for (const g of targets) {
-    const s = sums[g.id];
-    if (!s || s.n < limits.rtpDriftMinRounds || !s.bet) continue;
+    const s = sums[g.id], rule = driftRule(limits, g.kind);
+    if (!s || s.n < rule.minRounds || !s.bet) continue;
     const rtp = s.paid / s.bet * 100;
-    if (Math.abs(rtp - g.rtp_target) > limits.rtpDriftPct) out.push(raise(db, { type: 'rtp_drift', key: `rtp_drift:${g.id}:${day}`, gameId: g.id,
-      title: `${gameName(g.id)} payback is ${rtp.toFixed(1)}%, target ${g.rtp_target}%`, details: `Over the last 30 days (${s.n} rounds) the game paid back ${rtp.toFixed(1)}%. Short runs vary; a big gap over many rounds can mean a bug or abuse.` }));
+    if (Math.abs(rtp - g.rtp_target) > rule.pct) out.push(raise(db, { type: 'rtp_drift', key: `rtp_drift:${g.id}:${day}`, gameId: g.id,
+      title: `${gameName(g.id)} payback is ${rtp.toFixed(1)}%, target ${g.rtp_target}%`, details: `Over the last 30 days (${s.n} real-money rounds) the game paid back ${rtp.toFixed(1)}%. Short runs vary; a big gap over many rounds can mean a bug or abuse.` }));
   }
   const problems = await db.prepare(`SELECT id, type, player_id, meta FROM events WHERE type IN ('fairness_fail','round_error') AND created_at >= ? AND created_at <= ?`).bind(since, nowSql).all();
   for (const e of problems.results) out.push(raise(db, { type: e.type, severity: e.type === 'fairness_fail' ? 'critical' : 'warning', key: `${e.type}:${e.id}`, playerId: e.player_id,
@@ -223,6 +238,8 @@ export async function updateLimits(db, admin, input, env = {}) {
   if ('rtpDriftPct' in body) { if (typeof body.rtpDriftPct !== 'number' || body.rtpDriftPct < 0.5 || body.rtpDriftPct > 50) fail(400, 'Payback drift must be between 0.5 and 50 points.'); next.rtpDriftPct = body.rtpDriftPct; }
   if ('slotBigWinMultiple' in body) { if (!isInt(body.slotBigWinMultiple, 1, 2000)) fail(400, 'The slot big-win multiple must be between 1 and 2,000 times the bet.'); next.slotBigWinMultiple = body.slotBigWinMultiple; }
   if ('rtpDriftMinRounds' in body) { if (!isInt(body.rtpDriftMinRounds, 50, 1e9)) fail(400, 'Minimum rounds must be at least 50.'); next.rtpDriftMinRounds = body.rtpDriftMinRounds; }
+  if ('rtpDriftPctSlot' in body) { if (typeof body.rtpDriftPctSlot !== 'number' || body.rtpDriftPctSlot < 1 || body.rtpDriftPctSlot > 50) fail(400, 'Slot payback drift must be between 1 and 50 points.'); next.rtpDriftPctSlot = body.rtpDriftPctSlot; }
+  if ('rtpDriftMinRoundsSlot' in body) { if (!isInt(body.rtpDriftMinRoundsSlot, 1000, 1e6)) fail(400, 'Slot minimum rounds must be between 1,000 and 1,000,000.'); next.rtpDriftMinRoundsSlot = body.rtpDriftMinRoundsSlot; }
   if (JSON.stringify(next) === JSON.stringify(before)) return next;
   await stepUp(db, env, admin, { code, password });
   await db.batch([setMark(db, 'limits', next), audit(db, admin, 'settings.limits', { target: 'settings:limits', before, after: next })]);

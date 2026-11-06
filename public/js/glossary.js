@@ -1,5 +1,7 @@
 // Plain-English explanations used by tooltips across the panel.
 export const T = {
+  driftLimitSlot: '<b>Slot payback off target</b>A slot pays out in rare big hits, so its payback swings far more than roulette\'s: one 2,000 times win moves a 5,000-round figure by about 40 points. This is how many points Gods of Power may be off its target over the last 30 days before you hear about it. Roulette uses the smaller band above.',
+  driftMinRoundsSlot: '<b>Slot: only after this many rounds</b>How many real-money slot rounds must be in the last 30 days before the slot payback alert can fire. Slots need tens of thousands of rounds before their payback settles, far more than roulette.',
   slotBigWin: '<b>Slot big win</b>Gods of Power can pay 2,000 times the bet, and free spins often pay tens of times the bet, so the amount limit alone would flag ordinary slot rounds at high stakes. A slot round is a big win only when it is over the amount above AND at least this many times the bet. Roulette uses the amount alone.',
   profit: '<b>House profit (GGR)</b>Money players bet, minus money paid back to them. This is what the casino kept, before payment fees and bonuses.',
   bet: '<b>Money bet (turnover)</b>Every chip players put down in this period, added up across all games.',
