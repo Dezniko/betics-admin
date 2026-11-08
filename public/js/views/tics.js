@@ -1,12 +1,15 @@
 // $TICS: the Treasury page (owner) and the TICS payouts / deposits section of Payments.
 import { h, api, money, num, info, card, pageHead, loading, errorBox, empty, toast, confirmDialog, field, ago, localTime, table, segmented, unitsInput, readUnits,
-  eth, ethToWei, weiToEthText, addrLink, txLink, explorer, shortAddr, esc, stepUpFields, wdPill, WD_STATUS } from '../lib.js';
+  eth, ethToWei, weiToEthText, addrLink, txLink, explorer, shortAddr, esc, stepUpFields, wdPill, WD_STATUS, UNRESOLVED_TIP, PROTECTED_TIP } from '../lib.js';
 
 const T = {
   tokens: '<b>TICS in the casino wallet</b>Read live from Ethereum by the payouts service. This is the money that pays players.',
   gas: '<b>ETH for gas</b>Every payout costs a little ETH as the network fee. Without ETH the casino wallet cannot send anything.',
-  owed: '<b>Owed to players</b>Every real TICS balance players hold, plus withdrawals that are waiting or being sent.',
-  free: '<b>Free float</b>TICS in the casino wallet minus what is owed to players. Only this part can go to the treasury.',
+  owed: '<b>Owed to players</b>Every real TICS balance players hold, plus withdrawals that are waiting or being sent, plus unresolved deposits (money in the wallet that is not matched to a player yet).',
+  unresolved: UNRESOLVED_TIP,
+  protected: PROTECTED_TIP,
+  free: '<b>Free to send</b>Protected balance minus what is owed (unresolved deposits included) and spins in play. Only this part can go to the treasury; the payouts service checks the same figure itself.',
+  houseFunding: '<b>House funding</b>A deposit the owner marked as the casino\'s own top up. It is no longer counted as owed. Nothing is remembered about the sender: the next transfer from the same address arrives as unmatched again.',
   treasury: '<b>Treasury</b>Your own safe wallet for the house money. Keep only a working float in the casino wallet, because its key lives on a server.',
   send: '<b>Send to treasury</b>Moves free float from the casino wallet to the treasury address. It needs a new 6-digit code every time.',
   pause: '<b>Automatic payouts</b>While paused, player withdrawals wait in the queue and nothing is sent. Pause before you send from the casino wallet yourself (for example from MetaMask), so the two never clash.',
@@ -17,9 +20,12 @@ const T = {
   quickMax: '<b>Quick deposits up to</b>Deposits up to this amount use the quick confirmations; bigger ones wait for the full count. 0 turns quick deposits off.',
   startBlock: '<b>Start block</b>The block the deposit watcher starts reading from. Leave it empty unless you know you need it.',
   queue: '<b>TICS payouts</b>Player withdrawals and treasury sends, newest first. A queued withdrawal can still be cancelled; its money goes back to the player.',
-  deposits: '<b>TICS deposits</b>Every TICS transfer into the casino wallet. Unmatched means it came from a wallet that is not a player; you can assign it to the right player.',
+  deposits: '<b>TICS deposits</b>Every TICS transfer into the casino wallet. Unmatched means it came from a wallet that is not a player; you can assign it to the right player, or mark it as your own funding if you sent it yourself. Until then it counts as owed.',
 };
-const DEP = { credited: ['on', 'Credited'], unmatched: ['warn', 'Unmatched'], below_min: ['off', 'Below minimum'], assigned: ['on', 'Assigned'], ignored: ['off', 'Ignored'] };
+const DEP = { credited: ['on', 'Credited'], unmatched: ['warn', 'Unmatched'], below_min: ['warn', 'Below minimum'], assigned: ['on', 'Assigned'], ignored: ['off', 'Ignored'] };
+// Rows nobody has resolved yet count as owed (same rule as the server's unresolved deposits).
+const unresolved = x => !x.reversed_at && (x.status === 'unmatched' || x.status === 'below_min' || (x.status === 'assigned' && !x.credited_at));
+const depPill = x => x.status === 'ignored' && x.resolution === 'house_funding' ? h('span', { class: 'pill off', tipText: 'Marked by an owner as the casino\'s own top up. Not counted as owed.' }, 'House funding') : pill(DEP, x.status);
 const pill = (map, s) => { const [c, t] = map[s] || ['off', s]; return h('span', { class: `pill ${c}` }, t); };
 const kpi = (label, tip, value, sub, cls = '') => h('div', { class: 'card kpi' }, h('div', { class: 'lab' }, label, tip ? info(tip) : null), h('div', { class: `big ${cls}` }, value), sub ? h('div', { class: 'delta' }, sub) : null);
 const copyBtn = text => h('button', { class: 'btn small', type: 'button', onclick: () => { navigator.clipboard?.writeText(text); toast('Copied'); } }, 'Copy');
@@ -119,8 +125,17 @@ export function treasuryView(ctx) {
       paused && pausedReason ? h('div', {}, `Reason: ${pausedReason}`) : h('div', { class: 'muted small' }, paused ? '' : 'Pause before you send from the casino wallet yourself.')),
       h('button', { class: `btn ${paused ? 'primary' : 'danger'}`, onclick: () => togglePause(!paused) }, paused ? 'Resume payouts' : 'Pause payouts'));
     const tokenUnits = live ? st.tokenUnits : f?.tokenUnits, ethWei = live ? st.ethWei : f?.ethWei;
-    // Owed = real balances + unsent player withdrawals (incl. Starting) + treasury sends in flight; free = wallet - owed - open spin holds.
-    const owed = live ? st.owedUnits : d.owedUnitsDb, freeUnits = live ? st.freeUnits : d.freeUnitsDb;
+    // Owed = real balances + unsent player withdrawals (incl. Starting) + treasury sends in flight + unresolved deposits.
+    // Protected = the part of the wallet the deposit scan has classified as the casino's own; free to send = protected - owed - open spin holds.
+    // The payouts service figures (live) win over the database ones; both follow the same rule.
+    const owed = live ? st.owedUnits : d.owedUnitsDb;
+    const safeUnknown = live ? !!st.safeUnknown : d.safeUnknown;
+    const protectedUnits = safeUnknown ? 0 : live && st.safeUnits != null ? Math.min(st.tokenUnits, st.safeUnits) : d.protectedUnitsDb;
+    const freeUnits = safeUnknown ? 0 : live && st.safeUnits != null ? st.freeUnits : d.freeToSendUnitsDb;
+    if (safeUnknown) banners.push(h('div', { class: 'bank-hero warn' }, h('span', { class: 'dot' }), h('div', {}, h('b', {}, 'The casino wallet balance is not classified yet'),
+      h('div', {}, 'The deposit scan has not yet worked out which part of the wallet is the casino\'s own, so nothing can go to the treasury. Try again in a few minutes.'))));
+    if (d.unresolved?.n) banners.push(h('div', { class: 'bank-hero warn' }, h('span', { class: 'dot' }), h('div', {}, h('b', {}, `${num(d.unresolved.n)} unresolved deposit${d.unresolved.n === 1 ? '' : 's'}: ${money(d.unresolved.units)}`),
+      h('div', {}, 'Money in the casino wallet that is not matched to a player yet. It counts as owed until you assign it or mark it as your own funding. ', h('a', { href: '#/payments' }, 'Open Payments')))));
     if (d.adminTreasuryOkAt) banners.push(h('div', { class: 'bank-hero warn' }, h('span', { class: 'dot' }), h('div', {}, h('b', {}, 'Your owner sign in is new'),
       h('div', {}, `For safety, treasury sends and address changes open for you at ${new Date(d.adminTreasuryOkAt).toLocaleString()}.`))));
     if (d.treasurySendableAt) banners.push(h('div', { class: 'bank-hero warn' }, h('span', { class: 'dot' }), h('div', {}, h('b', {}, 'The treasury address was changed recently'),
@@ -131,8 +146,11 @@ export function treasuryView(ctx) {
     const kpis = h('div', { class: 'kpis' },
       kpi('TICS in casino wallet', T.tokens, tokenUnits == null ? '-' : money(tokenUnits, { short: true }), src, 'gold'),
       kpi('ETH for gas', T.gas, ethWei == null ? '-' : eth(ethWei, 4), src),
-      kpi('Owed to players', T.owed, money(owed ?? 0, { short: true }), live ? 'Live' : f ? src : 'From player balances'),
-      kpi('Free float', T.free, freeUnits == null ? '-' : money(freeUnits, { short: true }), src, freeUnits < 0 ? 'down' : 'up'));
+      kpi('Protected balance', T.protected, safeUnknown ? 'Not classified' : protectedUnits == null ? '-' : money(protectedUnits, { short: true }), tokenUnits != null && protectedUnits != null && protectedUnits < tokenUnits ? `${money(tokenUnits - protectedUnits, { short: true })} not classified yet` : src, safeUnknown ? 'down' : ''),
+      kpi('Owed to players', T.owed, money(owed ?? 0, { short: true }), d.owed?.unresolvedUnits ? `Includes ${money(d.owed.unresolvedUnits, { short: true })} unresolved deposits` : live ? 'Live' : f ? src : 'From player balances'),
+      kpi('Unresolved deposits', T.unresolved, num(d.unresolved?.n || 0), money(d.unresolved?.units || 0, { short: true }), d.unresolved?.n ? 'down' : ''),
+      kpi('Free to send', T.free, freeUnits == null ? '-' : money(freeUnits, { short: true }), src, freeUnits < 0 ? 'down' : 'up'));
+    const explain = h('p', { class: 'muted small' }, 'Protected balance is the part of the wallet the deposit scan has classified as the casino\'s own; free to send is that minus everything owed (unresolved deposits included) and spins in play. The payouts service refuses any send above it.');
     const wallets = card('Wallets', T.treasury,
       h('div', { class: 'kv' }, h('span', { class: 'muted' }, 'Casino wallet'), s.casinoWallet ? h('span', { class: 'addr-line' }, addrLink(s.casinoWallet, chain, { full: true }), copyBtn(s.casinoWallet)) : h('span', { class: 'muted' }, 'Not set')),
       h('div', { class: 'kv' }, h('span', { class: 'muted' }, 'Treasury'), s.treasuryAddress ? h('span', { class: 'addr-line' }, addrLink(s.treasuryAddress, chain, { full: true }), copyBtn(s.treasuryAddress)) : h('span', { class: 'muted' }, 'Not set')),
@@ -158,7 +176,7 @@ export function treasuryView(ctx) {
       catch (err) { toast(err.message, 'bad'); code.value = ''; }
       finally { busy = false; sendBtn.disabled = !canSend; }
     } },
-      h('div', { class: 'form-grid' }, field('Amount (TICS)', h('div', { class: 'input-row' }, amount, max), `Up to the free float${freeUnits != null ? `: ${money(Math.max(0, freeUnits))}` : ''}.`),
+      h('div', { class: 'form-grid' }, field('Amount (TICS)', h('div', { class: 'input-row' }, amount, max), `Up to the amount free to send${freeUnits != null ? `: ${money(Math.max(0, freeUnits))}` : ''}.`),
         field('Code from your authenticator app', code, 'A new code for every send. A code you already used (also the one you signed in with) is refused; wait for the next one.')),
       h('div', { class: 'actions' }, sendBtn, !s.treasuryAddress ? h('span', { class: 'muted small' }, 'Set a treasury address first.') : d.statusProblem ? h('span', { class: 'muted small' }, 'Sending needs the payouts service.') : null)));
     const sends = card('Recent treasury sends', null, table([
@@ -168,7 +186,7 @@ export function treasuryView(ctx) {
       { label: 'Status', render: x => h('span', {}, wdPill(x.status), x.last_error ? h('div', { class: 'muted small' }, x.last_error) : null) },
       { label: 'Tx', render: x => txLink(x.tx_hash, chain) },
       { label: 'By', render: x => h('span', { class: 'small' }, x.requested_by || '-') }], d.sends, { emptyText: 'No treasury sends yet.' }));
-    body.replaceChildren(...banners, pauseBox, kpis, h('div', { class: 'grid2 even' }, wallets, sendCard), sends, settingsForm(ctx, s, load),
+    body.replaceChildren(...banners, pauseBox, kpis, explain, h('div', { class: 'grid2 even' }, wallets, sendCard), sends, settingsForm(ctx, s, load),
       h('p', { class: 'muted small' }, `Checked ${new Date(d.checkedAt).toLocaleTimeString()}.`));
   }
   async function togglePause(pause) {
@@ -262,7 +280,7 @@ export function ticsPaymentsSection(ctx) {
         n(c.withdrawals, 'blocked') ? 'down' : n(c.withdrawals, 'queued') ? 'gold' : ''),
       kpi('Sent, 30 days', null, money(d.totals.wd30, { short: true }), `Fees ${money(d.totals.fees30, { short: true })}`),
       kpi('Deposits, 30 days', null, money(d.totals.dep30, { short: true }), null, 'up'),
-      kpi('Unmatched deposits', T.deposits, num(n(c.deposits, 'unmatched')), money(c.deposits.unmatched?.units || 0, { short: true }), n(c.deposits, 'unmatched') ? 'gold' : ''));
+      kpi('Unresolved deposits', T.unresolved, num(d.unresolved?.n ?? n(c.deposits, 'unmatched')), `${money(d.unresolved?.units ?? (c.deposits.unmatched?.units || 0), { short: true })} counted as owed`, (d.unresolved?.n ?? n(c.deposits, 'unmatched')) ? 'gold' : ''));
     const canCancel = ctx.can('payments:approve');
     const queue = h('section', { class: 'card' }, h('h3', {}, 'TICS payouts', info(T.queue), h('span', { class: 'r' },
       segmented([['open', 'Open'], ['queued', 'Waiting'], ['blocked', 'Needs review'], ['sent', 'Sent'], ['failed', 'Failed'], ['cancelled', 'Cancelled'], ['all', 'All']], wdTab, v => { wdTab = v; load(); }))),
@@ -280,20 +298,24 @@ export function ticsPaymentsSection(ctx) {
         { label: '', render: w => canCancel && w.status === 'queued' ? h('button', { class: 'btn small danger', onclick: () => cancel(w) }, 'Cancel')
           : ctx.can('treasury:manage') && w.status === 'blocked' && w.kind === 'player' ? h('button', { class: 'btn small', onclick: () => releaseBlocked(w) }, 'Return to player') : '' },
       ], d.withdrawals) : empty('Nothing here', wdTab === 'open' ? 'Withdrawals appear here while they wait, send or fail.' : 'No payouts in this list.'));
-    const owner = ctx.can('deposit:assign');
+    const owner = ctx.can('deposit:assign'), houseOwner = ctx.can('deposit:house_funding');
     const deposits = h('section', { class: 'card' }, h('h3', {}, 'TICS deposits', info(T.deposits), h('span', { class: 'r' },
-      segmented([['all', 'All'], ['unmatched', 'Unmatched'], ['credited', 'Credited'], ['assigned', 'Assigned'], ['below_min', 'Below minimum']], depTab, v => { depTab = v; load(); }))),
+      segmented([['all', 'All'], ['unmatched', 'Unmatched'], ['below_min', 'Below minimum'], ['credited', 'Credited'], ['assigned', 'Assigned'], ['ignored', 'House funding']], depTab, v => { depTab = v; load(); }))),
       d.deposits.length ? table([
         { label: 'When', render: x => h('span', { tip: localTime(x.created_at) }, ago(x.created_at)) },
         { label: 'From', render: x => addrLink(x.from_address, chain) },
         { label: 'Player', render: x => x.player_id ? h('a', { class: 'mono small', href: `#/players/${x.player_id}` }, shortAddr(x.player_id)) : h('span', { class: 'muted' }, '-') },
         { label: 'Amount', align: 'right', render: x => h('b', {}, money(x.amount_units)) },
         { label: 'Block', align: 'right', render: x => num(x.block_number) },
-        { label: 'Status', render: x => h('span', {}, x.reversed_at ? h('span', { class: 'pill off' }, 'Reversed') : x.review_at ? h('span', { class: 'pill warn', tip: 'Not found on Ethereum although its block is final. The player is paused and this money cannot be withdrawn. Check it on Etherscan.' }, 'Under review') : pill(DEP, x.status),
+        { label: 'Status', render: x => h('span', {}, x.reversed_at ? h('span', { class: 'pill off' }, 'Reversed') : x.review_at ? h('span', { class: 'pill warn', tip: 'Not found on Ethereum although its block is final. The player is paused and this money cannot be withdrawn. Check it on Etherscan.' }, 'Under review') : depPill(x),
           !x.reversed_at && !x.review_at && x.credited_at && !x.finalized_at ? h('div', { class: 'muted small', tip: 'Played already; it can be withdrawn once Ethereum has made its block final, about 15 minutes after it arrived.' }, 'Not final yet') : null,
+          unresolved(x) ? h('div', { class: 'muted small', tipText: 'Not matched to a player yet, so it is counted as owed until you assign it or mark it as your own funding.' }, 'Counted as owed') : null,
+          x.resolution === 'house_funding' && x.resolved_by ? h('div', { class: 'muted small' }, `by ${x.resolved_by}${x.resolved_at ? `, ${ago(x.resolved_at)}` : ''}`) : null,
           x.note ? h('div', { class: 'muted small' }, x.note) : null) },
         { label: 'Tx', render: x => txLink(x.tx_hash, chain) },
-        { label: '', render: x => !owner || x.reversed_at ? '' : x.status === 'unmatched' ? h('button', { class: 'btn small primary', onclick: () => assign(x) }, 'Assign to player')
+        { label: '', render: x => !owner || x.reversed_at ? '' : x.status === 'unmatched' || x.status === 'below_min' ? h('div', { class: 'actions' },
+            x.status === 'unmatched' ? h('button', { class: 'btn small primary', onclick: () => assign(x) }, 'Assign to player') : null,
+            houseOwner ? h('button', { class: 'btn small', tipText: T.houseFunding, onclick: () => houseFunding(x) }, 'Mark as house funding') : null)
           : x.status === 'assigned' && !x.credited_at ? h('button', { class: 'btn small', tipText: 'The credit was not confirmed. It can only be tried again for the same player.', onclick: () => assign(x) }, 'Try the credit again') : '' },
       ], d.deposits) : empty('No deposits here', 'TICS sent to the casino wallet appears here once the watcher sees it.'));
     wrap.replaceChildren(head, paused || '', kpis, queue, deposits);
@@ -311,6 +333,18 @@ export function ticsPaymentsSection(ctx) {
       fields: step.fields })) return;
     try { const r = await api(`/tics/withdrawals/${encodeURIComponent(w.id)}/release`, { method: 'POST', body: step.read() }); toast(r.withdrawal?.status === 'cancelled' ? 'Returned to the player.' : 'Return started; it finishes on the next run.'); load(); }
     catch (e) { toast(e.message, 'bad'); }
+  }
+  // Owner only, password and a fresh code: the deposit was the house's own top up, so it stops counting as owed.
+  async function houseFunding(x) {
+    const note = h('input', { class: 'input', maxlength: 200, placeholder: 'Where you sent it from (required)' });
+    const step = stepUpFields();
+    if (!await confirmDialog({ title: `Mark ${money(x.amount_units)} as house funding?`, confirmLabel: 'Mark as house funding', danger: true,
+      body: h('div', { class: 'stack' }, h('p', { class: 'muted' }, `${money(x.amount_units)} sent from ${x.from_address}. It will no longer be counted as owed to anyone.`),
+        h('p', {}, h('b', {}, 'Only do this for money you sent yourself. Customer money must be assigned to the player instead.')),
+        h('p', { class: 'muted small' }, 'Nothing is remembered about the sender: the next transfer from the same address (an exchange may serve many people) arrives as unmatched again.')),
+      fields: h('div', { class: 'stack' }, field('Note', note), step.fields) })) return;
+    try { const r = await api(`/tics/deposits/${encodeURIComponent(x.id)}/house-funding`, { method: 'POST', body: { note: note.value, ...step.read() } }); toast(r.duplicate ? 'It was already marked as house funding.' : `Marked ${r.amount} as house funding.`); load(); }
+    catch (e) { toast(e.message, 'bad'); load(); }
   }
   // Real TICS move: password and a fresh code. A credit that was not confirmed can only be retried for the same player.
   async function assign(x) {

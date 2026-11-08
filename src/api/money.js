@@ -64,7 +64,7 @@ export async function money(db, url) {
   if (!['hour', 'day', 'week', 'month'].includes(group)) fail(400, 'Unknown grouping.');
   const r = periodRange(period);
   const real = await moneyMode(db, url);
-  return cached(db, `money:${period}:${group}:${real}`, 60e3, async () => {
+  const data = await cached(db, `money:${period}:${group}:${real}`, 60e3, async () => {
   const [rows, byGame, total, games] = await Promise.all([
     db.prepare(`SELECT ${bucketExpr(group)} AS t, game_id, COUNT(*) AS rounds, SUM(stake_cents) AS bet, SUM(payout_cents) AS paid, COUNT(DISTINCT player_id) AS players
       FROM rounds WHERE created_at >= ? AND created_at < ? AND ${moneyIs(real)} GROUP BY t, game_id ORDER BY t`).bind(r.from, r.to).all(),
@@ -79,6 +79,8 @@ export async function money(db, url) {
     byGame: byGame.results.map(g => ({ gameId: g.game_id, gameName: names[g.game_id] || g.game_id, ...shape({ rounds: g.rounds, bet: g.bet, paid: g.paid, players: null }) })),
   };
   });
+  // The reserve card (wallet, owed incl. unresolved deposits, protected balance): live, like on Overview. Real mode only.
+  return { ...data, ticsFloat: real ? await floatSnapshot(db) : null };
 }
 
 export function moneyCsv(data) {
@@ -92,20 +94,40 @@ export function moneyCsv(data) {
 //        + player withdrawals not paid or refunded yet ('holding', 'queued', 'signing', 'sending',
 //          'blocked' = stopped before payment, money still held; 'cancelling' = refund not confirmed yet)
 //        + treasury sends in flight ('queued', 'signing', 'sending')
+//        + unresolved customer deposits (security review F2): TICS that reached the casino wallet from a sender
+//          we could not match to a player ('unmatched'), below the minimum ('below_min', refundable), or claimed
+//          for a player but not credited yet ('assigned' without credited_at). Owed to someone until an owner
+//          assigns them (then the player balance carries the money) or marks them as the house's own funding
+//          (status 'ignored', resolution 'house_funding'). Reversed rows never count.
 //   free float = wallet token balance - owed - open spin holds (expires_at > now, ms).
-// Every part is an indexed read: players_real_tics (partial), chain_withdrawals_kind_status, spin_holds_expiry.
+// Every part is an indexed read: players_real_tics (partial), chain_withdrawals_kind_status, spin_holds_expiry,
+// chain_deposits_status (the statuses are literals so SQLite can use it; EXPLAIN is pinned in a test).
 // Player withdrawal statuses that are still owed (same list as OWED_SQL in ~/betics worker/wallet.js).
 export const PLAYER_OWED = ['holding', 'queued', 'signing', 'sending', 'blocked', 'cancelling'];
 const PLAYER_OWED_STATUSES = `(${PLAYER_OWED.map(x => `'${x}'`).join(',')})`;
+// Same rule as UNRESOLVED_DEPOSITS_SQL in ~/betics worker/wallet.js.
+export const UNRESOLVED_DEPOSITS_WHERE = "reversed_at IS NULL AND (status IN ('unmatched','below_min') OR (status = 'assigned' AND credited_at IS NULL))";
+export const UNRESOLVED_DEPOSITS_SQL = `(SELECT COALESCE(SUM(amount_units),0) FROM chain_deposits WHERE ${UNRESOLVED_DEPOSITS_WHERE})`;
 export async function owedBreakdown(db, nowMs = Date.now()) {
   const r = await db.prepare(`SELECT
     (SELECT COALESCE(SUM(real_tics_cents),0) FROM players WHERE real_tics_cents > 0) AS players,
     (SELECT COALESCE(SUM(amount_units),0) FROM chain_withdrawals WHERE kind = 'player' AND status IN ${PLAYER_OWED_STATUSES}) AS pending,
     (SELECT COALESCE(SUM(amount_units),0) FROM chain_withdrawals WHERE kind = 'treasury' AND status IN ('queued','signing','sending')) AS treasury,
+    ${UNRESOLVED_DEPOSITS_SQL} AS unresolved,
     (SELECT COALESCE(SUM(units),0) FROM spin_holds WHERE expires_at > ?) AS holds`).bind(nowMs).first();
-  return { playersUnits: r.players, pendingUnits: r.pending, treasuryUnits: r.treasury, holdsUnits: r.holds, owedUnits: r.players + r.pending + r.treasury };
+  return { playersUnits: r.players, pendingUnits: r.pending, treasuryUnits: r.treasury, unresolvedUnits: r.unresolved, holdsUnits: r.holds,
+    owedUnits: r.players + r.pending + r.treasury + r.unresolved };
 }
 export const freeFloat = (tokenUnits, o) => tokenUnits == null ? null : tokenUnits - o.owedUnits - o.holdsUnits;
+// The protected part of the wallet balance (security review F1): what the deposit scan has classified as the
+// casino's own. The game writes safeTokenUnits into the float snapshot; a snapshot without it (older game code)
+// protects nothing, and so does safeUnknown (classification not established yet). Never above the plain balance.
+export const protectedUnits = f => f?.tokenUnits == null ? null : f.safeUnknown ? 0 : Math.min(f.tokenUnits, Number.isSafeInteger(f.safeTokenUnits) ? f.safeTokenUnits : 0);
+// What may leave for the treasury: the protected balance minus everything owed (unresolved deposits included)
+// and open spin holds. The payouts signer computes the same figure from the chain itself and refuses anything above it.
+export const freeToSend = (f, o) => { const p = protectedUnits(f); return p == null ? null : p - o.owedUnits - o.holdsUnits; };
+// Unresolved deposits as a count and a total (the Treasury page shows both).
+export const unresolvedDeposits = db => db.prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(amount_units),0) AS units FROM chain_deposits WHERE ${UNRESOLVED_DEPOSITS_WHERE}`).first();
 
 // The casino wallet snapshot the game cron caches (chain_state 'float'), with its age.
 export async function floatSnapshot(db) {
@@ -118,10 +140,13 @@ export async function floatSnapshot(db) {
       owedBreakdown(db),
       db.prepare("SELECT json_extract(value, '$.maxSpinExposurePct') AS pct FROM settings WHERE key = 'tics_payments'").first(),
     ]);
-    const free = freeFloat(f.tokenUnits ?? null, o);
+    const free = freeFloat(f.tokenUnits ?? null, o), safe = protectedUnits(f), freeSend = freeToSend(f, o);
     const pct = Math.min(100, Math.max(1, Number(setting?.pct) || 25));
+    // Max win per spin follows the game's own rule (the protected balance, not the plain one).
     return { at: f.at ?? null, chainId: f.chainId ?? null, wallet: f.wallet ?? null, tokenUnits: f.tokenUnits ?? null, ethWei: f.ethWei != null ? String(f.ethWei) : null,
-      owedUnits: o.owedUnits, holdsUnits: o.holdsUnits, owed: o, freeUnits: free, exposurePct: pct, maxWinUnits: free == null ? null : Math.floor(Math.max(0, free) * pct / 100),
+      safeTokenUnits: Number.isSafeInteger(f.safeTokenUnits) ? f.safeTokenUnits : null, safeUnknown: !!f.safeUnknown, protectedUnits: safe,
+      owedUnits: o.owedUnits, holdsUnits: o.holdsUnits, unresolvedUnits: o.unresolvedUnits, owed: o, freeUnits: free, freeToSendUnits: freeSend, exposurePct: pct,
+      maxWinUnits: freeSend == null ? null : Math.floor(Math.max(0, freeSend) * pct / 100),
       ageSeconds: f.at ? Math.max(0, Math.round((Date.now() - f.at) / 1000)) : null };
   } catch { return null; }
 }

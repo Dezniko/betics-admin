@@ -20,9 +20,9 @@ const TREASURY = '0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB';
 const TX = '0x' + 'ab'.repeat(32);
 const step = () => Math.floor(Date.now() / 30000);
 
-function setup({ float = 10_000_000, telegram = false } = {}) {
+function setup({ float = 10_000_000, telegram = false, safe = null } = {}) {
   const DB = createD1([MIGRATION]);
-  if (float != null) DB.raw.prepare("INSERT INTO chain_state (key, value) VALUES ('float', ?)").run(JSON.stringify({ at: Date.now(), chainId: 1, wallet: A2, tokenUnits: float, ethWei: '1' }));
+  if (float != null) DB.raw.prepare("INSERT INTO chain_state (key, value) VALUES ('float', ?)").run(JSON.stringify({ at: Date.now(), chainId: 1, wallet: A2, tokenUnits: float, safeTokenUnits: safe ?? float, safeUnknown: false, ethWei: '1' }));
   const payoutCalls = [], walletCalls = [], credited = new Set();
   const env = {
     DB, SESSION_PEPPER: 'pepper', INTERNAL_SECRET: 'secret', TREASURY_SECRET: 'treasury-secret',

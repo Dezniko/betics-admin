@@ -18,10 +18,10 @@ const A2 = '0xfb6916095ca1df60bb79ce92ce3ea74c37c5d359';
 const TREASURY_CHECKSUM = '0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB';
 const TX = '0x' + 'ab'.repeat(32);
 
-function setup({ payouts = true, float = 10_000_000 } = {}) {
+function setup({ payouts = true, float = 10_000_000, safe = null } = {}) {
   const DB = createD1([MIGRATION]);
   DB.raw.prepare("INSERT INTO settings (key, value) VALUES ('casino_key_ct', ?)").run(JSON.stringify(KEY_CT));
-  if (float != null) DB.raw.prepare("INSERT INTO chain_state (key, value) VALUES ('float', ?)").run(JSON.stringify({ at: Date.now(), chainId: 1, wallet: A2, tokenUnits: float, ethWei: '1' }));
+  if (float != null) DB.raw.prepare("INSERT INTO chain_state (key, value) VALUES ('float', ?)").run(JSON.stringify({ at: Date.now(), chainId: 1, wallet: A2, tokenUnits: float, safeTokenUnits: safe ?? float, safeUnknown: false, ethWei: '1' }));
   const payoutCalls = [], walletCalls = [];
   const payoutReplies = { '/status': () => Response.json({ casinoWallet: A2, treasuryAddress: null, paused: false, pausedReason: null, chainId: 1, queue: { queued: 1 },
     keyConfigured: true, tokenUnits: 500000, ethWei: '20000000000000000', owedUnits: 120000, freeUnits: 380000, casino_key_ct: KEY_CT, privateKey: KEY_CT }) };
@@ -412,7 +412,7 @@ test('players: search by part of a wallet address in any case, wallet filters an
 test('the encrypted casino key never appears in any response', async () => {
   const s = setup({ float: null });
   s.player(A1);
-  s.DB.raw.prepare("INSERT INTO chain_state (key, value) VALUES ('float', ?)").run(JSON.stringify({ at: Date.now() - 5000, chainId: 1, wallet: A2, tokenUnits: 500000, ethWei: '20000000000000000', owedUnits: 120000, freeUnits: 380000 }));
+  s.DB.raw.prepare("INSERT INTO chain_state (key, value) VALUES ('float', ?)").run(JSON.stringify({ at: Date.now() - 5000, chainId: 1, wallet: A2, tokenUnits: 500000, safeTokenUnits: 500000, safeUnknown: false, ethWei: '20000000000000000', owedUnits: 120000, freeUnits: 380000 }));
   const own = await s.admin('dez@example.com', 'owner');
   s.setTics({ casinoWallet: A2, treasuryAddress: A1, casino_key_ct: KEY_CT });
   const gets = ['/api/me', '/api/overview?period=today', '/api/money?period=30d', '/api/money.csv?period=all', '/api/bank', '/api/tics/treasury', '/api/tics/fees', '/api/tics/payments?status=all',
@@ -430,7 +430,7 @@ test('the encrypted casino key never appears in any response', async () => {
   }
   const o = JSON.parse(responses[1][1]);
   assert.equal(o.ticsFloat.freeUnits, o.ticsFloat.tokenUnits - o.ticsFloat.owedUnits, "free float uses live owed balances");
-  assert.equal(o.ticsFloat.maxWinUnits, Math.floor(Math.max(0, o.ticsFloat.freeUnits) * 25 / 100));
+  assert.equal(o.ticsFloat.maxWinUnits, Math.floor(Math.max(0, o.ticsFloat.freeToSendUnits) * 25 / 100));
   assert.ok(o.ticsFloat.ageSeconds >= 4);
   assert.equal(JSON.parse(responses[4][1]).ticsFloat.tokenUnits, 500000);
 });

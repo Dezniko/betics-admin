@@ -6,7 +6,7 @@ import { fail, isInt, text, tics } from '../util.js';
 import { requirePerm, confirmSensitive, stepUp, requireTreasuryReady } from '../auth.js';
 import { audit, writeAudit, raiseAlert } from '../audit.js';
 import { normAddress } from '../eth.js';
-import { owedBreakdown, freeFloat } from './money.js';
+import { owedBreakdown, freeFloat, protectedUnits, freeToSend, unresolvedDeposits } from './money.js';
 
 export const DEFAULT_TICS = {
   chainId: 1, token: '0x551ecfdba071cb6541f642cb90a073c8c158df05', casinoWallet: null, treasuryAddress: null, confirmations: 12, startBlock: null,
@@ -76,7 +76,7 @@ export async function payouts(env, path, body, extraHeaders = {}) {
   if (res.status === 404 && (data.error === 'not found' || !data.error)) return { ok: false, problem: 'refused', status: 404, error: 'The payouts service refused the request. Check that both Workers have the same internal secret.' };
   return { ok: false, problem: 'error', status: res.status, error: data.error || `The payouts service answered ${res.status}.` };
 }
-const STATUS_KEYS = ['casinoWallet', 'treasuryAddress', 'paused', 'pausedReason', 'chainId', 'queue', 'keyConfigured', 'tokenUnits', 'ethWei', 'owedUnits', 'freeUnits'];
+const STATUS_KEYS = ['casinoWallet', 'treasuryAddress', 'paused', 'pausedReason', 'chainId', 'queue', 'keyConfigured', 'tokenUnits', 'ethWei', 'owedUnits', 'freeUnits', 'safeUnits', 'safeUnknown', 'spinHoldUnits'];
 const pick = (o, keys) => Object.fromEntries(keys.filter(k => o && k in o).map(k => [k, o[k]]));
 
 // When a treasury send becomes possible again after an address change (ms), or null.
@@ -89,17 +89,21 @@ const utc = ms => `${new Date(ms).toISOString().replace('T', ' ').slice(0, 16)} 
 // ---------- Treasury page (owner only) ----------
 export async function treasury(db, env, admin) {
   requirePerm(admin, 'treasury:manage');
-  const [settings, float, gas, prices, sends, owed, me] = await Promise.all([
+  const [settings, float, gas, prices, sends, owed, me, unresolved] = await Promise.all([
     ticsSettings(db), chainState(db, 'float'), chainState(db, 'gas'), chainState(db, 'prices'),
     db.prepare("SELECT id, to_address, amount_units, status, tx_hash, requested_by, last_error, created_at, sent_at FROM chain_withdrawals WHERE kind = 'treasury' ORDER BY created_at DESC LIMIT 20").all(),
     owedBreakdown(db),
     db.prepare('SELECT treasury_ok_after FROM admins WHERE id = ?').bind(admin.id).first(),
+    unresolvedDeposits(db),
   ]);
   const st = await payouts(env, '/status');
   const sendable = treasurySendableAt(settings);
   const mine = me?.treasury_ok_after ? Date.parse(me.treasury_ok_after.replace(' ', 'T') + 'Z') : null;
+  // Protected balance and free to send follow the same rule as the treasury precheck (and the payouts signer).
   return { settings, status: st.ok ? pick(st.data, STATUS_KEYS) : null, statusProblem: st.ok ? null : { problem: st.problem, error: st.error },
     float, owedUnitsDb: owed.owedUnits, owed, freeUnitsDb: freeFloat(float?.tokenUnits ?? null, owed),
+    protectedUnitsDb: protectedUnits(float), freeToSendUnitsDb: freeToSend(float, owed), safeUnknown: !!float?.safeUnknown,
+    unresolved: { n: unresolved?.n || 0, units: unresolved?.units || 0 },
     treasurySendableAt: sendable && sendable > Date.now() ? new Date(sendable).toISOString() : null,
     adminTreasuryOkAt: mine && mine > Date.now() ? new Date(mine).toISOString() : null,
     openSend: sends.results.find(x => ['holding', 'queued', 'signing', 'sending'].includes(x.status)) || null,
@@ -120,15 +124,20 @@ export async function treasurySend(db, env, admin, body, now = Date.now()) {
   if (sendable && sendable > now) fail(409, `The treasury address was changed recently. For safety, sends to it open at ${utc(sendable)}.`, 'treasury_address_new');
   const open = await db.prepare(`SELECT id, status FROM chain_withdrawals WHERE kind = 'treasury' AND status IN ${OPEN_TREASURY} LIMIT 1`).first();
   if (open) fail(409, 'Another treasury send is still in progress. Wait until it is sent (or failed) before starting a new one.', 'treasury_busy');
-  // Free float = wallet - owed (balances, unsent withdrawals, treasury in flight) - open spin holds.
+  // Free to send = PROTECTED wallet balance (what the deposit scan has classified as the casino's own; security
+  // review F1) - owed (balances, unsent withdrawals, treasury in flight, unresolved customer deposits) - open spin
+  // holds. Advisory only: the payouts signer computes the same figure from the chain and refuses above it, so this
+  // check must never be more permissive than that one.
   const float = await chainState(db, 'float');
   if (float?.tokenUnits == null) fail(409, 'The casino wallet balance is not known yet. Try again in a minute.', 'no_float');
-  const free = freeFloat(float.tokenUnits, await owedBreakdown(db, now));
-  if (units > free) fail(400, `Only ${tics(Math.max(0, free))} is free to send. The rest is owed to players or held for spins in play.`, 'not_free');
+  if (float.safeUnknown) fail(409, 'The casino wallet balance is not classified yet. Try again in a few minutes.', 'float_unclassified');
+  const owed = await owedBreakdown(db, now);
+  const free = freeToSend(float, owed);
+  if (units > free) fail(400, `Only ${tics(Math.max(0, free))} is free to send. The rest is owed to players, not yet classified as the casino's own, or held for spins in play.`, 'not_free');
   await confirmSensitive(db, env, admin, { code: body.code });
   const id = crypto.randomUUID();
   // Written before the payouts Worker is called, so the attempt is on record whatever happens next.
-  await writeAudit(db, admin, 'tics.treasury_send_intent', { target: `treasury:${id}`, after: { id, amountUnits: units, to: settings.treasuryAddress, freeUnits: free } });
+  await writeAudit(db, admin, 'tics.treasury_send_intent', { target: `treasury:${id}`, after: { id, amountUnits: units, to: settings.treasuryAddress, freeUnits: free, protectedUnits: protectedUnits(float), owedUnits: owed.owedUnits, unresolvedUnits: owed.unresolvedUnits } });
   const r = await payouts(env, '/treasury', { id, amountUnits: units, requestedBy: admin.email }, { 'X-Treasury-Secret': env.TREASURY_SECRET });
   if (!r.ok) {
     await writeAudit(db, admin, 'tics.treasury_send_refused', { target: `treasury:${id}`, after: { amountUnits: units, to: settings.treasuryAddress, error: r.error } });
@@ -259,7 +268,7 @@ export async function ticsPayments(db, url) {
   const dWhere = dep === 'all' ? '1=1' : DEP_STATUSES.includes(dep) ? 'd.status = ?' : fail(400, 'Unknown deposit status.');
   const kind = ['player', 'treasury'].includes(q.get('kind')) ? q.get('kind') : null;
   const wArgs = [...(WD_STATUSES.includes(wd) ? [wd] : []), ...(kind ? [kind] : [])];
-  const [settings, withdrawals, deposits, wCounts, dCounts, float, sums, gas, prices] = await Promise.all([
+  const [settings, withdrawals, deposits, wCounts, dCounts, float, sums, gas, prices, unresolved] = await Promise.all([
     ticsSettings(db),
     db.prepare(`SELECT w.id, w.kind, w.player_id, w.chain_id, w.to_address, w.amount_units, w.fee_units, w.send_units, w.status, w.release_at, w.nonce, w.tx_hashes, w.tx_hash,
       w.attempts, w.last_error, w.requested_by, w.cancelled_by, w.sent_at, w.broadcast_at, w.created_at, w.updated_at, p.wallet_address
@@ -271,9 +280,10 @@ export async function ticsPayments(db, url) {
     db.prepare(`SELECT (SELECT COALESCE(SUM(amount_units),0) FROM chain_deposits WHERE status IN ('credited','assigned') AND created_at >= datetime('now','-30 days')) AS dep30,
       (SELECT COALESCE(SUM(send_units),0) FROM chain_withdrawals WHERE kind = 'player' AND status = 'sent' AND created_at >= datetime('now','-30 days')) AS wd30,
       (SELECT COALESCE(SUM(fee_units),0) FROM chain_withdrawals WHERE kind = 'player' AND status = 'sent' AND created_at >= datetime('now','-30 days')) AS fees30`).first(),
-    chainState(db, 'gas'), chainState(db, 'prices'),
+    chainState(db, 'gas'), chainState(db, 'prices'), unresolvedDeposits(db),
   ]);
   return {
+    unresolved: { n: unresolved?.n || 0, units: unresolved?.units || 0 },
     settings: pick(settings, ['chainId', 'payoutsPaused', 'pausedReason', 'coolingSeconds', 'realEnabled', 'depositsOpen', 'withdrawalsOpen', 'feesEnabled']),
     withdrawals: withdrawals.results.map(w => ({ ...w, tx_hashes: (() => { try { return JSON.parse(w.tx_hashes || '[]'); } catch { return []; } })() })),
     deposits: deposits.results,
@@ -365,9 +375,42 @@ export async function assignDeposit(db, env, admin, id, body) {
     fail(502, 'We could not confirm the credit. Try again for the same player.', 'credit_unconfirmed');
   }
   await db.batch([
-    db.prepare("UPDATE chain_deposits SET credited_at = datetime('now') WHERE id = ? AND credited_at IS NULL").bind(id),
+    // The wallet confirmed the credit: the player balance now carries this money, so the row leaves the unresolved
+    // (owed) set. Resolution fields record who settled it and when; an earlier stamp (lost reply, then retry) is kept.
+    db.prepare(`UPDATE chain_deposits SET credited_at = COALESCE(credited_at, datetime('now')), resolution = 'assigned',
+      resolved_at = COALESCE(resolved_at, datetime('now')), resolved_by = COALESCE(resolved_by, ?) WHERE id = ?`).bind(admin.email, id),
     db.prepare("INSERT INTO events (type, player_id, value_cents, meta) VALUES ('deposit', ?, ?, ?)").bind(player.id, dep.amount_units, JSON.stringify({ currency: 'TICS', tx: dep.tx_hash, assignedBy: admin.email })),
     audit(db, admin, 'tics.deposit_assign', { target: `chain_deposit:${id}`, before: { status: dep.status, playerId: dep.player_id }, after: { status: 'assigned', playerId: player.id, amountUnits: dep.amount_units, ref, duplicate: !!data.duplicate }, reason: note }),
   ]);
   return { ok: true, duplicate: !!data.duplicate, realTicsCents: data.realTicsCents ?? null, deposit: await db.prepare('SELECT * FROM chain_deposits WHERE id = ?').bind(id).first(), amount: tics(dep.amount_units) };
+}
+
+// Owner, with password + code: an unmatched (or below-minimum) deposit was the house's own top up, for example
+// sent from the owner's exchange account. It stops being owed (security review F2) and is recorded as
+// status 'ignored' with resolution 'house_funding'. One conditional UPDATE claims the row, so two owners
+// cannot both resolve it and a row that was assigned or credited in the meantime is left alone. No address
+// rule is created: an exchange hot wallet may also send other customers' money, so every deposit from it still
+// arrives as unmatched and is judged on its own.
+export async function markHouseFunding(db, env, admin, id, body = {}) {
+  requirePerm(admin, 'deposit:house_funding');
+  if (!text(body.note, 3, 200)) fail(400, 'Write a short note (3 to 200 characters), for example which exchange or wallet you sent it from.');
+  const note = body.note.trim();
+  const dep = await db.prepare('SELECT * FROM chain_deposits WHERE id = ?').bind(id).first();
+  if (!dep) fail(404, 'No deposit with that id.');
+  if (dep.status === 'ignored' && dep.resolution === 'house_funding') return { ok: true, duplicate: true, deposit: dep, amount: tics(dep.amount_units) };
+  if (dep.reversed_at) fail(409, 'This deposit disappeared from the chain after its block was final. There is nothing to resolve.');
+  if (dep.credited_at || dep.status === 'credited') fail(409, 'This deposit was credited to a player. It is their money, not house funding.');
+  if (dep.status === 'assigned') fail(409, 'This deposit is assigned to a player and waiting for its credit. Finish or check that first.');
+  if (!['unmatched', 'below_min'].includes(dep.status)) fail(409, 'Only an unmatched or below-minimum deposit can be marked as house funding.');
+  await stepUp(db, env, admin, body);
+  const r = await db.prepare(`UPDATE chain_deposits SET status = 'ignored', resolution = 'house_funding', resolved_at = datetime('now'), resolved_by = ?, note = ?
+    WHERE id = ? AND status IN ('unmatched','below_min') AND reversed_at IS NULL AND credited_at IS NULL`).bind(admin.email, note, id).run();
+  if ((r.meta?.changes ?? 0) !== 1) fail(409, 'This deposit changed while you were looking at it (assigned, reversed or already resolved). Reload and check.');
+  await db.batch([
+    audit(db, admin, 'tics.deposit_house_funding', { target: `chain_deposit:${id}`, before: { status: dep.status, note: dep.note },
+      after: { status: 'ignored', resolution: 'house_funding', amountUnits: dep.amount_units, from: dep.from_address, txHash: dep.tx_hash }, reason: note }),
+    raiseAlert(db, { type: 'tics_deposit_house_funding', severity: 'info', key: `tics_deposit_house_funding:${id}`, title: `Deposit marked as house funding: ${tics(dep.amount_units)} from ${dep.from_address}`,
+      details: `${admin.email} marked the deposit ${dep.tx_hash} (${tics(dep.amount_units)} from ${dep.from_address}) as the casino's own funding: ${note}. It is no longer counted as owed. If a customer sent this money, assign it to them instead.` }),
+  ]);
+  return { ok: true, duplicate: false, deposit: await db.prepare('SELECT * FROM chain_deposits WHERE id = ?').bind(id).first(), amount: tics(dep.amount_units) };
 }

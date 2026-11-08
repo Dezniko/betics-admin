@@ -1,5 +1,5 @@
 // Money and Analytics screens.
-import { h, api, money, pct, num, info, card, pageHead, loading, errorBox, empty, segmented, flag, countryName, cap, table, fillSeries, isReal, viewQuery } from '../lib.js';
+import { h, api, money, pct, num, info, card, pageHead, loading, errorBox, empty, segmented, flag, countryName, cap, table, fillSeries, isReal, viewQuery, floatCard } from '../lib.js';
 import { T } from '../glossary.js';
 import { lineChart, barChart, shareBars, donut, heatmap } from '../charts.js';
 import { rememberGames, gameName } from './outcome.js';
@@ -54,7 +54,9 @@ export function moneyView(ctx) {
           { label: 'Paid', align: 'right', render: r => money(r.paid) }, { label: 'Profit', align: 'right', render: r => h('span', { class: r.profit >= 0 ? 'up' : 'down' }, money(r.profit, { sign: true })) },
           { label: 'Payback', align: 'right', render: r => r.bet ? pct(r.paid / r.bet * 100) : '-' }], rows.filter(r => r.rounds).reverse(), { emptyText: 'No rounds in this period.' })),
         d.realMoney ? h('section', { class: 'card' }, h('h3', {}, 'Deposits and withdrawals'), h('p', { class: 'muted' }, 'Every TICS deposit and payout, with what is waiting, is on the Payments page. The casino wallet and the free float are on Treasury.'),
-          h('div', { class: 'actions' }, h('a', { class: 'btn', href: '#/payments' }, 'Open Payments'), h('a', { class: 'btn', href: '#/treasury' }, 'Open Treasury'))) : '');
+          h('div', { class: 'actions' }, h('a', { class: 'btn', href: '#/payments' }, 'Open Payments'), h('a', { class: 'btn', href: '#/treasury' }, 'Open Treasury'))) : '',
+        // The reserve card: wallet, owed (unresolved deposits included), protected balance and free to send. Real mode only.
+        floatCard(d.ticsFloat, ctx) || '');
     } catch (e) { body.replaceChildren(errorBox(e, load)); }
   }
   load();

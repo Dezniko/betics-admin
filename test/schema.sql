@@ -570,3 +570,9 @@ INSERT OR IGNORE INTO games (id, name, kind, math_id, min_stake_cents, max_stake
 VALUES ('godsofpower', 'Gods of Power', 'slot', 'gods92', 2000, 1000000, 2000000000, 2000000000, 2);
 INSERT OR IGNORE INTO game_math VALUES
   ('godsofpower', 'gods92', 'Gods of Power 92', 'Five reels, three rows, 20 lines, wild, scatter and free spins with doubled wins. One round pays at most 2,000 times the bet. Payback 92%.', 92.00, 92.00, 92.00);
+-- Deposits nobody has claimed yet (unmatched, below the minimum, or assigned but not yet credited) are
+-- customer money until an owner resolves them. A resolution records why a deposit left that state:
+-- 'house_funding' (the owner's own top up, marked by hand with step-up) or 'assigned' (credited to a player).
+ALTER TABLE chain_deposits ADD COLUMN resolution TEXT;
+ALTER TABLE chain_deposits ADD COLUMN resolved_at TEXT;
+ALTER TABLE chain_deposits ADD COLUMN resolved_by TEXT;

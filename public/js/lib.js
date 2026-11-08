@@ -164,12 +164,20 @@ export function fillSeries(series, bucket, days, make) {
 }
 
 // Casino wallet snapshot (chain_state 'float'), shared by Overview and Bank.
+// Plain words for the unresolved-deposits line, shared by the reserve card and the Treasury page.
+export const UNRESOLVED_TIP = '<b>Unresolved deposits</b>Money that reached the casino wallet from senders we could not match to a player yet. It is owed to someone until you assign it or mark it as your own funding.';
+export const PROTECTED_TIP = '<b>Protected balance</b>The part of the wallet balance the deposit scan has already classified as the casino\'s own. Tokens that arrived but are not matched to a player yet are customer money and are left out.';
 export function floatCard(f, ctx) {
   if (!f) return null;
   const age = f.ageSeconds == null ? '' : f.ageSeconds < 90 ? `${f.ageSeconds}s ago` : f.ageSeconds < 5400 ? `${Math.round(f.ageSeconds / 60)}m ago` : `${Math.round(f.ageSeconds / 3600)}h ago`;
-  const row = (k, v, cls = '') => h('div', { class: 'gm' }, h('span', {}, k), h('b', { class: cls }, v), h('span', { class: 'muted' }, ''));
+  const row = (k, v, cls = '', tip = null) => h('div', { class: 'gm' }, h('span', {}, k, tip ? info(tip) : null), h('b', { class: cls }, v), h('span', { class: 'muted' }, ''));
+  const freeSend = f.freeToSendUnits ?? f.freeUnits;
   return card('Casino wallet float', '<b>Float</b>The TICS in the casino wallet, what is owed to players, and the free part that can go to the treasury. Cached by the game every minute.',
-    row('TICS in wallet', money(f.tokenUnits), 'gold'), row('Owed to players', money(f.owedUnits)), row('Free float', money(f.freeUnits), f.freeUnits < 0 ? 'down' : 'up'),
+    row('TICS in wallet', money(f.tokenUnits), 'gold'),
+    f.protectedUnits != null ? row('Protected balance', f.safeUnknown ? 'Not classified yet' : money(f.protectedUnits), f.safeUnknown ? 'down' : '', PROTECTED_TIP) : null,
+    row('Owed to players', money(f.owedUnits)),
+    f.unresolvedUnits != null ? row('Unresolved deposits', money(f.unresolvedUnits), f.unresolvedUnits > 0 ? 'down' : '', UNRESOLVED_TIP) : null,
+    row('Free to send', freeSend == null ? '-' : money(freeSend), freeSend < 0 ? 'down' : 'up', '<b>Free to send</b>Protected balance minus what is owed (unresolved deposits included) and spins in play. Only this part can go to the treasury.'),
     row('Covers every player balance', f.tokenUnits == null || f.owedUnits == null ? '-' : f.tokenUnits >= f.owedUnits ? 'Yes' : 'No', f.tokenUnits >= f.owedUnits ? 'up' : 'down'),
     f.maxWinUnits != null ? row('Max win per spin now', money(f.maxWinUnits), 'gold') : null,
     f.maxWinUnits != null ? row('Max bet on one number', money(Math.floor(f.maxWinUnits / 36))) : null,

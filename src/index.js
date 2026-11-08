@@ -6,7 +6,7 @@ import { currentAdmin, login, endSession, clearCookie, setupInfo, setupPassword,
 import { overview, money, moneyCsv } from './api/money.js';
 import { listGames, gameDetail, updateGame } from './api/games.js';
 import { listRounds, roundDetail, listPlayers, playerDetail, setPlayerStatus, playersCsv } from './api/players.js';
-import { treasury, treasurySend, updateTreasuryAddress, setPayoutsPaused, updateTicsSettings, ticsPayments, cancelWithdrawal, releaseBlockedWithdrawal, assignDeposit, fees, updateFees } from './api/tics.js';
+import { treasury, treasurySend, updateTreasuryAddress, setPayoutsPaused, updateTicsSettings, ticsPayments, cancelWithdrawal, releaseBlockedWithdrawal, assignDeposit, markHouseFunding, fees, updateFees } from './api/tics.js';
 import { analytics } from './api/analytics.js';
 import { listAlerts, resolveAlert, updateLimits, runChecks, sendTelegram, checkBank } from './api/alerts.js';
 import { createMessage, listMessages, stopMessage, audiencePreview, sendScheduled } from './api/messages.js';
@@ -86,6 +86,7 @@ route('GET', '/api/tics/payments', async ({ db, url }) => json(await ticsPayment
 route('POST', '/api/tics/withdrawals/:id/cancel', async ({ db, env, admin, params }) => json(await cancelWithdrawal(db, env, admin, decodeId(params.id))));
 route('POST', '/api/tics/withdrawals/:id/release', async ({ db, env, admin, params, request }) => json(await releaseBlockedWithdrawal(db, env, admin, decodeId(params.id), await readJson(request))));
 route('POST', '/api/tics/deposits/:id/assign', async ({ db, env, admin, params, request }) => json(await assignDeposit(db, env, admin, decodeId(params.id), await readJson(request))));
+route('POST', '/api/tics/deposits/:id/house-funding', async ({ db, env, admin, params, request }) => json(await markHouseFunding(db, env, admin, decodeId(params.id), await readJson(request))));
 route('GET', '/api/games', async ({ db, url }) => json({ games: await listGames(db, viewReal(url)) }));
 route('GET', '/api/games/:id', async ({ db, params, url }) => json(await gameDetail(db, params.id, viewReal(url))));
 route('PUT', '/api/games/:id', async ({ db, env, admin, params, request }) => json(await updateGame(db, admin, params.id, await readJson(request), env)));
