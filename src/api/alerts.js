@@ -108,10 +108,12 @@ export async function runChecks(db, now = new Date(), { force = false } = {}) {
   // if the batch fails, the watermark stays where it was and the next run raises the same alerts again.
   // Each alert insert only happens if this run's claim won (the state row carries this run's id).
   const run = crypto.randomUUID();
-  const json = JSON.stringify({ ...scan.state, run });
-  const claim = scan.prevRid == null
-    ? db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').bind(STATE_KEY, json)
-    : db.prepare("UPDATE settings SET value = ?, updated_at = datetime('now') WHERE key = ? AND json_extract(value, '$.rid') = ?").bind(json, STATE_KEY, scan.prevRid);
+  const claimFor = state => {
+    const json = JSON.stringify({ ...state, run });
+    return scan.prevRid == null
+      ? db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)').bind(STATE_KEY, json)
+      : db.prepare("UPDATE settings SET value = ?, updated_at = datetime('now') WHERE key = ? AND json_extract(value, '$.rid') = ?").bind(json, STATE_KEY, scan.prevRid);
+  };
   const WON = "SELECT 1 FROM settings WHERE key = ? AND json_extract(value, '$.run') = ?";
   const raise = (_db, a) => raiseAlertIf(db, a, WON, [STATE_KEY, run]);
   const out = [];
@@ -156,14 +158,33 @@ export async function runChecks(db, now = new Date(), { force = false } = {}) {
   const problems = await db.prepare(`SELECT id, type, player_id, meta FROM events WHERE type IN ('fairness_fail','round_error') AND created_at >= ? AND created_at <= ?`).bind(since, nowSql).all();
   for (const e of problems.results) out.push(raise(db, { type: e.type, severity: e.type === 'fairness_fail' ? 'critical' : 'warning', key: `${e.type}:${e.id}`, playerId: e.player_id,
     title: e.type === 'fairness_fail' ? 'A player\'s fairness check failed' : 'A round could not be completed', details: e.meta || null }));
-  // Central copy vs wallet: the newest ledger balance must match the player's balance. Only players
-  // seen since the last run (at least the last 15 minutes, at most a day); the newest ledger row is one
-  // step of index ledger_player_money (player_id, real_money).
+  // Central copy vs wallet: the newest ledger balance must match the player's balance, for demo money
+  // (balance_cents vs the newest real_money = 0 row) and for real $TICS (real_tics_cents vs the newest
+  // real_money = 1, currency 'TICS' row; security re-audit R2). Only players seen since the last run (at
+  // least the last 15 minutes, at most a day), one players read for both; each newest ledger row is one
+  // step of index ledger_player_money (player_id, real_money), EXPLAIN pinned in the tests.
+  // The wallet copies ledger rows and the balance to the central database in separate steps, so a real
+  // mismatch is only reported when the SAME pair of figures is seen on two runs in a row (10 minutes apart):
+  // the first sighting is kept in the alerts state (claimed with the rest of this run), a changed or gone
+  // mismatch starts over. The demo check reports at once, as before.
   const activeSince = sqlTime(new Date(Math.max(nowMs - 864e5, Math.min(parseSql(since) || nowMs, nowMs - RECONCILE_WINDOW_MS))));
-  const mismatch = await db.prepare(`SELECT p.id, p.balance_cents, (SELECT l.balance_after_cents FROM ledger l WHERE l.player_id = p.id AND l.real_money = 0 ORDER BY l.rowid DESC LIMIT 1) AS last
+  const mismatch = await db.prepare(`SELECT p.id, p.balance_cents, p.real_tics_cents,
+      (SELECT l.balance_after_cents FROM ledger l WHERE l.player_id = p.id AND l.real_money = 0 ORDER BY l.rowid DESC LIMIT 1) AS last,
+      (SELECT l.balance_after_cents FROM ledger l WHERE l.player_id = p.id AND l.real_money = 1 AND l.currency = 'TICS' ORDER BY l.rowid DESC LIMIT 1) AS last_real
     FROM players p WHERE p.last_seen_at >= ?`).bind(activeSince).all();
-  for (const p of mismatch.results) if (p.last != null && p.last !== p.balance_cents) out.push(raise(db, { type: 'reconcile', severity: 'critical', key: `reconcile:${p.id}:${p.last}:${p.balance_cents}`, playerId: p.id,
-    title: `Balance records disagree for player ${p.id.slice(0, 8)}`, details: `Ledger says ${tics(p.last)}, player record says ${tics(p.balance_cents)}. It usually fixes itself within a minute; if not, check the wallet.` }));
+  const seenBefore = scan.state.realMismatch || {}, realMismatch = {};
+  for (const p of mismatch.results) {
+    if (p.last != null && p.last !== p.balance_cents) out.push(raise(db, { type: 'reconcile', severity: 'critical', key: `reconcile:${p.id}:${p.last}:${p.balance_cents}`, playerId: p.id,
+      title: `Balance records disagree for player ${p.id.slice(0, 8)}`, details: `Ledger says ${tics(p.last)}, player record says ${tics(p.balance_cents)}. It usually fixes itself within a minute; if not, check the wallet.` }));
+    if (p.last_real == null || p.last_real === p.real_tics_cents) continue;
+    const pair = `${p.last_real}:${p.real_tics_cents}`;
+    realMismatch[p.id] = pair;
+    if (seenBefore[p.id] !== pair) continue; // first sighting: give the central copy one more run to catch up
+    out.push(raise(db, { type: 'reconcile_real', severity: 'critical', key: `reconcile_real:${p.id}:${pair}`, playerId: p.id,
+      title: 'A player\'s real $TICS balance does not match their ledger',
+      details: `Player ${p.id.slice(0, 8)}: the ledger says ${tics(p.last_real)}, the player record says ${tics(p.real_tics_cents)}, on two checks in a row. Real money is involved: check the wallet and the player's ledger before any payout.` }));
+  }
+  scan.state.realMismatch = realMismatch;
   const wds = await db.prepare(`SELECT id, player_id, amount_cents FROM withdrawals WHERE status = 'requested' AND created_at >= ? AND created_at <= ?`).bind(since, nowSql).all();
   for (const w of wds.results) out.push(raise(db, { type: 'withdrawal_request', severity: 'info', key: `withdrawal:${w.id}`, playerId: w.player_id,
     title: `Withdrawal to approve: ${usdt(w.amount_cents)}`, details: `Player ${w.player_id.slice(0, 8)} asked to withdraw ${usdt(w.amount_cents)}. Approve or reject it on the Payments screen.` }));
@@ -172,7 +193,8 @@ export async function runChecks(db, now = new Date(), { force = false } = {}) {
     title: `A deposit was only partly paid`, details: `Player ${d.player_id.slice(0, 8)} was asked for ${usdt(d.requested_cents)} but sent ${d.actually_paid}. Nothing was credited. Check it in NOWPayments.` }));
   const markStmt = db.prepare(`INSERT INTO settings (key, value) SELECT ?, ? WHERE EXISTS (${WON})
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`).bind('alerts_mark', JSON.stringify(nowSql), STATE_KEY, run);
-  await db.batch([claim, ...out, markStmt]);
+  // The state row written with the claim carries the real-mismatch sightings gathered above.
+  await db.batch([claimFor(scan.state), ...out, markStmt]);
   const won = await db.prepare("SELECT json_extract(value, '$.run') AS run FROM settings WHERE key = ?").bind(STATE_KEY).first();
   if (won?.run !== run) return null; // another run got here first (its alerts are its own)
   return out.length;
