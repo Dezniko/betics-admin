@@ -3,12 +3,12 @@
 // and assigning a deposit moves money from "unresolved" to the player balance without changing total liabilities.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createD1 } from './d1shim.mjs';
 import worker from '../src/index.js';
 import { hotp } from '../src/totp.js';
 import { makeSetupToken } from '../src/auth.js';
-import { owedBreakdown, UNRESOLVED_DEPOSITS_SQL, protectedUnits, freeToSend } from '../src/api/money.js';
+import { owedBreakdown, UNRESOLVED_DEPOSITS_SQL, UNRESOLVED_DEPOSITS_WHERE, unresolvedDeposits, protectedUnits, freeToSend } from '../src/api/money.js';
 
 const MIGRATION = new URL('./schema.sql', import.meta.url).pathname;
 const ORIGIN = 'https://admin.betics.io';
@@ -70,17 +70,18 @@ function setup({ float = 1_000_000, safe = float, safeUnknown = false } = {}) {
   return { DB, env, call, admin, stepUp, setTics, player, deposit, row, balances, walletCalls, payoutCalls };
 }
 
-test('owed includes unresolved deposits (unmatched, below minimum, assigned but not credited), never credited, reversed or house funding; the read uses chain_deposits_status', async () => {
+test('owed includes unresolved deposits (unmatched, below minimum, credited or assigned but not confirmed), never confirmed, reversed or house funding; the read uses chain_deposits_status', async () => {
   const s = setup();
   s.player(A1, 1000);
   s.deposit('unmatched', 500); s.deposit('below_min', 20); s.deposit('assigned', 300, { playerId: A1 });
+  s.deposit('credited', 60, { playerId: A1 }); // picked by the scan, wallet credit not confirmed yet (re-audit R3)
   s.deposit('assigned', 7000, { playerId: A1, creditedAt: '2026-11-01 10:00:00' }); s.deposit('credited', 9000, { playerId: A1, creditedAt: '2026-11-01 10:00:00' });
   s.deposit('unmatched', 4000, { reversedAt: '2026-11-01 10:00:00' });
   s.DB.raw.prepare("UPDATE chain_deposits SET status = 'ignored', resolution = 'house_funding' WHERE amount_units = 20").run();
   s.deposit('below_min', 11);
   const o = await owedBreakdown(s.DB);
-  assert.equal(o.unresolvedUnits, 500 + 300 + 11);
-  assert.equal(o.owedUnits, 1000 + 811, 'balances plus unresolved deposits');
+  assert.equal(o.unresolvedUnits, 500 + 300 + 60 + 11);
+  assert.equal(o.owedUnits, 1000 + 871, 'balances plus unresolved deposits');
   const plan = s.DB.raw.prepare(`EXPLAIN QUERY PLAN SELECT ${UNRESOLVED_DEPOSITS_SQL} AS n`).all().map(r => r.detail).join(' | ');
   assert.match(plan, /chain_deposits_status/, plan);
   assert.ok(!/SCAN chain_deposits\b(?! USING)/.test(plan), plan);
@@ -244,4 +245,57 @@ test('UI: the deposits list offers Mark as house funding with the warning, and e
   assert.match(moneyView, /floatCard\(d\.ticsFloat, ctx\)/);
   const index = readFileSync(new URL('../src/index.js', import.meta.url), 'utf8');
   assert.match(index, /route\('POST', '\/api\/tics\/deposits\/:id\/house-funding'/);
+});
+
+// Security re-audit R3: the admin's unresolved-deposit rule must be the SAME as the game's and the payouts signer's
+// (UNRESOLVED_DEPOSITS_SQL in the game repo, worker/wallet.js), or the admin shows less owed than they reserve.
+// The literal below is the game's rule as of the re-audit; when the game repo is checked out beside this one its
+// current text is read and compared, so a change on either side fails here.
+const CORE_UNRESOLVED_LITERAL = "reversed_at IS NULL AND (status IN ('unmatched', 'below_min') OR (status IN ('credited', 'assigned') AND credited_at IS NULL))";
+const norm = t => t.replace(/\s+/g, ' ').replace(/\s*([(),])\s*/g, '$1').trim();
+function coreUnresolvedWhere() {
+  const path = new URL('../../betics/worker/wallet.js', import.meta.url).pathname;
+  if (!existsSync(path)) { console.log('  game repo not found, parity check uses the pasted rule'); return { where: CORE_UNRESOLVED_LITERAL, fromRepo: false }; }
+  const src = readFileSync(path, 'utf8');
+  const m = src.match(/export const UNRESOLVED_DEPOSITS_SQL = `\(SELECT COALESCE\(SUM\(amount_units\), 0\) FROM chain_deposits\s+WHERE ([\s\S]*?)\)`;/);
+  assert.ok(m, 'UNRESOLVED_DEPOSITS_SQL not found in the game repo wallet.js: update this extractor');
+  return { where: m[1], fromRepo: true };
+}
+
+test('R3 parity: the admin unresolved-deposit rule is textually the game rule (read from ~/betics when present)', () => {
+  const core = coreUnresolvedWhere();
+  assert.equal(norm(UNRESOLVED_DEPOSITS_WHERE), norm(core.where), `admin rule drifted from the game's (${core.fromRepo ? 'game repo' : 'pasted literal'}):\n  admin: ${UNRESOLVED_DEPOSITS_WHERE}\n  core:  ${core.where}`);
+  assert.equal(norm(core.where), norm(CORE_UNRESOLVED_LITERAL), 'the game rule changed: update the literal here and the admin predicate');
+  assert.match(UNRESOLVED_DEPOSITS_WHERE, /'credited'/, 'credited rows the wallet has not confirmed are reserved by the game: the admin must count them');
+});
+
+test('R3 data: for every deposit state the admin figure equals the game query on the same database', async () => {
+  const s = setup();
+  s.player(A1, 0);
+  const done = '2026-11-01 10:00:00';
+  // [status, units, extra, expected unresolved]: pending = no credited_at; confirmed = credited_at set.
+  const cases = [
+    ['unmatched', 1, {}, true], ['below_min', 2, {}, true],
+    ['credited', 4, { playerId: A1 }, true], ['credited', 8, { playerId: A1, creditedAt: done }, false],
+    ['assigned', 16, { playerId: A1 }, true], ['assigned', 32, { playerId: A1, creditedAt: done }, false],
+    ['ignored', 64, {}, false],
+    ['unmatched', 128, { reversedAt: done }, false], ['below_min', 256, { reversedAt: done }, false],
+    ['credited', 512, { playerId: A1, reversedAt: done }, false], ['credited', 1024, { playerId: A1, creditedAt: done, reversedAt: done }, false],
+    ['assigned', 2048, { playerId: A1, reversedAt: done }, false], ['assigned', 4096, { playerId: A1, creditedAt: done, reversedAt: done }, false],
+    ['ignored', 8192, { reversedAt: done }, false],
+  ];
+  for (const [status, units, extra] of cases) s.deposit(status, units, extra);
+  s.DB.raw.prepare("UPDATE chain_deposits SET resolution = 'house_funding' WHERE status = 'ignored'").run();
+  const expected = cases.filter(c => c[3]).reduce((n, c) => n + c[1], 0);
+  const core = coreUnresolvedWhere();
+  const coreUnits = s.DB.raw.prepare(`SELECT COALESCE(SUM(amount_units), 0) AS n FROM chain_deposits WHERE ${core.where}`).get().n;
+  const o = await owedBreakdown(s.DB);
+  assert.equal(o.unresolvedUnits, coreUnits, 'admin and game disagree on what is unresolved');
+  assert.equal(coreUnits, expected, 'the game rule itself: both pending statuses count, confirmed, ignored and reversed rows never');
+  assert.equal((await unresolvedDeposits(s.DB)).units, coreUnits, 'the Treasury page figure uses the same rule');
+  // Each state on its own, so a wrong row can be named.
+  for (const [status, units, extra, pending] of cases) {
+    const one = s.DB.raw.prepare(`SELECT COUNT(*) AS n FROM chain_deposits WHERE amount_units = ? AND ${UNRESOLVED_DEPOSITS_WHERE}`).get(units).n;
+    assert.equal(one, pending ? 1 : 0, `${status} ${JSON.stringify(extra)} should be ${pending ? 'unresolved' : 'resolved'}`);
+  }
 });

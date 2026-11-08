@@ -95,9 +95,10 @@ export function moneyCsv(data) {
 //          'blocked' = stopped before payment, money still held; 'cancelling' = refund not confirmed yet)
 //        + treasury sends in flight ('queued', 'signing', 'sending')
 //        + unresolved customer deposits (security review F2): TICS that reached the casino wallet from a sender
-//          we could not match to a player ('unmatched'), below the minimum ('below_min', refundable), or claimed
-//          for a player but not credited yet ('assigned' without credited_at). Owed to someone until an owner
-//          assigns them (then the player balance carries the money) or marks them as the house's own funding
+//          we could not match to a player ('unmatched'), below the minimum ('below_min', refundable), or meant
+//          for a player but not credited yet ('credited' or 'assigned' without credited_at: the scan or an owner
+//          picked the player, the wallet has not confirmed the credit). Owed to someone until an owner assigns
+//          them (then the player balance carries the money) or marks them as the house's own funding
 //          (status 'ignored', resolution 'house_funding'). Reversed rows never count.
 //   free float = wallet token balance - owed - open spin holds (expires_at > now, ms).
 // Every part is an indexed read: players_real_tics (partial), chain_withdrawals_kind_status, spin_holds_expiry,
@@ -105,8 +106,10 @@ export function moneyCsv(data) {
 // Player withdrawal statuses that are still owed (same list as OWED_SQL in ~/betics worker/wallet.js).
 export const PLAYER_OWED = ['holding', 'queued', 'signing', 'sending', 'blocked', 'cancelling'];
 const PLAYER_OWED_STATUSES = `(${PLAYER_OWED.map(x => `'${x}'`).join(',')})`;
-// Same rule as UNRESOLVED_DEPOSITS_SQL in ~/betics worker/wallet.js.
-export const UNRESOLVED_DEPOSITS_WHERE = "reversed_at IS NULL AND (status IN ('unmatched','below_min') OR (status = 'assigned' AND credited_at IS NULL))";
+// Same rule as UNRESOLVED_DEPOSITS_SQL in ~/betics worker/wallet.js (security re-audit R3: the game and the payouts
+// signer reserve 'credited' rows the wallet has not confirmed too). test/reserve.test.mjs compares this text with
+// the game repo's when it is checked out beside this one: change both or that test fails.
+export const UNRESOLVED_DEPOSITS_WHERE = "reversed_at IS NULL AND (status IN ('unmatched', 'below_min') OR (status IN ('credited', 'assigned') AND credited_at IS NULL))";
 export const UNRESOLVED_DEPOSITS_SQL = `(SELECT COALESCE(SUM(amount_units),0) FROM chain_deposits WHERE ${UNRESOLVED_DEPOSITS_WHERE})`;
 export async function owedBreakdown(db, nowMs = Date.now()) {
   const r = await db.prepare(`SELECT
