@@ -6,7 +6,7 @@
 -- Payouts are paused and the game cron left a float snapshot (the local admin has no PAYOUTS binding: "service unavailable").
 UPDATE settings SET value = json_set(value, '$.payoutsPaused', json('true'), '$.pausedReason', 'QA: paused for the browser suite', '$.casinoWallet', '0xfb6916095ca1df60bb79ce92ce3ea74c37c5d359') WHERE key = 'tics_payments';
 INSERT OR REPLACE INTO settings (key, value) VALUES ('casino_key_ct', '"QA-CIPHERTEXT-never-shown"');
-INSERT OR REPLACE INTO chain_state (key, value) VALUES ('float', '{"at":1760000000000,"chainId":1,"wallet":"0xfb6916095ca1df60bb79ce92ce3ea74c37c5d359","tokenUnits":50000000,"ethWei":"20000000000000000","owedUnits":1234500,"freeUnits":48765500}');
+INSERT OR REPLACE INTO chain_state (key, value) VALUES ('float', '{"at":1760000000000,"chainId":1,"wallet":"0xfb6916095ca1df60bb79ce92ce3ea74c37c5d359","tokenUnits":50000000,"safeTokenUnits":45000000,"safeUnknown":false,"ethWei":"20000000000000000","owedUnits":1234500,"freeUnits":48765500}');
 INSERT OR REPLACE INTO chain_state (key, value) VALUES ('gas', '{"at":1760000000000,"baseFeeWei":"10000000000","tipWei":"1000000000"}');
 
 -- Players: A1 (wallet, email, holdings), A2 (wallet only), g1 (guest, demo only).
